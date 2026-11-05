@@ -125,4 +125,23 @@ struct ChatHistoryCollapseTests {
         #expect(!transition.appended)
         #expect(transition.prepended)
     }
+
+    @Test("clearing turns on card switch then loading new turns transitions cleanly")
+    func twoStepCardSwitchViaEmptyTurns() {
+        // Step 1: CardDetailView clears turns synchronously to [] on card.id change
+        let clearTransition = ChatTranscript.edgeTransition(
+            oldFirst: 1000, oldLast: 9000, newFirst: nil, newLast: nil,
+            lastSeen: 9000, turns: []
+        )
+        #expect(clearTransition.switched)
+
+        // Step 2: loadHistory finishes for the new card and populates turns
+        let newTurns = [Self.turn(5), Self.turn(50)]
+        let loadTransition = ChatTranscript.edgeTransition(
+            oldFirst: nil, oldLast: nil, newFirst: 5, newLast: 50,
+            lastSeen: nil, turns: newTurns
+        )
+        #expect(!loadTransition.switched)
+        #expect(loadTransition.appended)
+    }
 }

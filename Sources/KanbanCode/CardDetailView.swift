@@ -273,10 +273,10 @@ struct CardDetailView: View {
                 terminalView
             case .history:
                 SessionHistoryView(
-                    turns: turns,
-                    isLoading: isLoadingHistory,
+                    turns: currentCardTurns,
+                    isLoading: !stillShowing(card.id) || isLoadingHistory,
                     checkpointMode: checkpointMode,
-                    hasMoreTurns: hasMoreTurns,
+                    hasMoreTurns: stillShowing(card.id) && hasMoreTurns,
                     isLoadingMore: isLoadingMore,
                     assistant: card.link.effectiveAssistant,
                     onCancelCheckpoint: { checkpointMode = false },
@@ -288,6 +288,7 @@ struct CardDetailView: View {
                     onLoadAroundTurn: { turnIndex in Task { await loadAroundTurn(turnIndex) } },
                     sessionPath: card.link.sessionLink?.sessionPath ?? card.session?.jsonlPath
                 )
+                .id(card.id)
             case .issue:
                 if let issue = card.link.issueLink {
                     IssueTabView(issue: issue, cardTitle: card.displayTitle, githubBaseURL: githubBaseURL)
@@ -696,14 +697,18 @@ struct CardDetailView: View {
         card.link.isLaunching == true || !browserTabs.isEmpty
     }
 
+    private var currentCardTurns: [ConversationTurn] {
+        stillShowing(card.id) ? turns : []
+    }
+
     @ViewBuilder
     private var chatViewForCurrentCard: some View {
         ChatView(
-            turns: turns,
-            isLoading: isLoadingHistory,
+            turns: currentCardTurns,
+            isLoading: !stillShowing(card.id) || isLoadingHistory,
             activityState: card.activityState,
             assistant: card.link.effectiveAssistant,
-            hasMoreTurns: hasMoreTurns,
+            hasMoreTurns: stillShowing(card.id) && hasMoreTurns,
             tmuxSessionName: card.link.tmuxLink?.sessionName,
             cardId: card.id,
             onSendPrompt: { text, imagePaths in
@@ -728,7 +733,7 @@ struct CardDetailView: View {
             },
             onLoadMore: { Task { _ = await loadPreviousUserSegment() } },
             onLoadAroundTurn: { turnIndex in Task { await loadAroundTurn(turnIndex) } },
-            collapsedRanges: collapsedRanges,
+            collapsedRanges: stillShowing(card.id) ? collapsedRanges : [],
             onExpandRange: { range in await expandRange(range) },
             onJumpToPreviousUser: { await loadPreviousUserSegment() },
             sessionPath: card.link.sessionLink?.sessionPath ?? card.session?.jsonlPath,
@@ -753,6 +758,7 @@ struct CardDetailView: View {
             draftImages: chatDraftImages,
             pendingMessage: $chatPendingMessage
         )
+        .id("\(card.id)-\(openConversation?.id ?? "main")")
     }
 
     @ViewBuilder
@@ -1013,6 +1019,7 @@ struct CardDetailView: View {
                     }
                     if isClaudeTabSelected, let conversation = openConversation {
                         ConversationChatView(card: card, conversation: conversation)
+                            .id("\(card.id)-\(conversation.id)")
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
@@ -1232,7 +1239,8 @@ struct CardDetailView: View {
     @ViewBuilder
     private func transcriptBehind(_ status: CardSessionStatus) -> some View {
         let assistant = card.link.effectiveAssistant
-        if turns.isEmpty, historyReadCardId == card.id || card.link.sessionLink == nil {
+        let cardTurns = currentCardTurns
+        if cardTurns.isEmpty, historyReadCardId == card.id || card.link.sessionLink == nil {
             VStack(spacing: 12) {
                 AssistantIcon(assistant: assistant)
                     .frame(width: CGFloat(32).scaled, height: CGFloat(32).scaled)
@@ -1244,9 +1252,10 @@ struct CardDetailView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .task(id: "transcript-\(card.id)") { await loadHistory() }
         } else {
-            TranscriptTerminalView(turns: turns, githubBaseURL: githubBaseURL) {
+            TranscriptTerminalView(turns: cardTurns, githubBaseURL: githubBaseURL) {
                 sessionStatusBar(status)
             }
+            .id("\(card.id)-\(cardTurns.isEmpty)")
             .task(id: "transcript-\(card.id)") { await loadHistory() }
         }
     }
