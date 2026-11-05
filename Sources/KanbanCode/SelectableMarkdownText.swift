@@ -80,7 +80,7 @@ struct SelectableMarkdownText: NSViewRepresentable {
             textView.isRichText = true
             textView.textContainerInset = CGSize.zero
             textView.isHorizontallyResizable = false
-            textView.isVerticallyResizable = true
+            textView.isVerticallyResizable = false
             textView.linkTextAttributes = [.cursor: NSCursor.pointingHand]
             return textView
         }
@@ -127,10 +127,14 @@ struct SelectableMarkdownText: NSViewRepresentable {
                 self.reportedOverflow = nil
                 self.attributedByWidth.removeAll(keepingCapacity: true)
                 self.sizeByWidth.removeAll(keepingCapacity: true)
+                self.invalidateIntrinsicContentSize()
             }
             self.textContainer?.maximumNumberOfLines = lineLimit ?? 0
             self.textContainer?.lineBreakMode = lineLimit == nil ? .byWordWrapping : .byTruncatingTail
             self.render(width: self.bounds.width)
+            if changed {
+                self.reportOverflow(inHeight: self.bounds.height)
+            }
         }
 
         /// The width this row is laid out at, kept so a probe can answer with it.
@@ -444,6 +448,8 @@ enum ChatTextMeasurement {
         // what draws one message over the next.
         var height = used.maxY
         if layoutManager.numberOfGlyphs > 0 {
+            let full = NSRange(location: 0, length: layoutManager.numberOfGlyphs)
+            height = max(height, layoutManager.boundingRect(forGlyphRange: full, in: container).maxY)
             let last = layoutManager.lineFragmentRect(
                 forGlyphAt: layoutManager.numberOfGlyphs - 1, effectiveRange: nil)
             height = max(height, last.maxY)
