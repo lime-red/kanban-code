@@ -234,8 +234,13 @@ enum AppShortcut: CaseIterable {
             return ctx.detailOpen && !ctx.paletteOpen && !ctx.promptEditorFocused
 
         // Board shortcuts only when palette is closed
-        case .deselect, .deleteCard, .deleteCardForward:
+        case .deselect:
             return !ctx.paletteOpen
+
+        // Deleting a card uses bare Delete / Forward Delete keys, so it must
+        // never fire while a text input has focus or when no card is selected.
+        case .deleteCard, .deleteCardForward:
+            return ctx.hasSelectedCard && !ctx.paletteOpen && !ctx.promptEditorFocused
 
         // Project switching works everywhere (palette auto-closes)
         case .project1, .project2, .project3, .project4, .project5,
