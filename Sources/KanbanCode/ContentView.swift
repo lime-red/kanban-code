@@ -2118,7 +2118,13 @@ struct ContentView: View {
     // MARK: - Keyboard Shortcuts
 
     private var shortcutContext: AppShortcutContext {
-        AppShortcutContext(from: store.state, terminalTabActive: detailTab == .terminal)
+        var ctx = AppShortcutContext(from: store.state, terminalTabActive: detailTab == .terminal)
+        if let responder = NSApp.keyWindow?.firstResponder {
+            if (responder as? NSTextView)?.isEditable == true || responder is NSTextField {
+                ctx.promptEditorFocused = true
+            }
+        }
+        return ctx
     }
 
     @ViewBuilder
@@ -2270,12 +2276,6 @@ struct ContentView: View {
             store.dispatch(.selectCard(cardId: nil))
         }
             .keyboardShortcut(AppShortcut.deselect.key, modifiers: AppShortcut.deselect.modifiers)
-            .hidden()
-        Button("") { if AppShortcut.deleteCard.isActive(in: shortcutContext) { deleteSelectedCard() } }
-            .keyboardShortcut(AppShortcut.deleteCard.key, modifiers: AppShortcut.deleteCard.modifiers)
-            .hidden()
-        Button("") { if AppShortcut.deleteCardForward.isActive(in: shortcutContext) { deleteSelectedCard() } }
-            .keyboardShortcut(AppShortcut.deleteCardForward.key, modifiers: AppShortcut.deleteCardForward.modifiers)
             .hidden()
 
         // Cmd+1-9: terminal tab switching (when detail open) or project switching
@@ -2563,6 +2563,10 @@ struct ContentView: View {
                 }
             }
 
+            let modifiers = event.modifierFlags
+                .intersection(.deviceIndependentFlagsMask)
+                .subtracting([.numericPad, .function])
+
             switch event.specialKey {
             case .upArrow:
                 navigateCard(.up); return nil
@@ -2572,6 +2576,20 @@ struct ContentView: View {
                 navigateCard(.left); return nil
             case .rightArrow:
                 navigateCard(.right); return nil
+            case .delete, .backspace:
+                guard modifiers.isEmpty, case .none = activeDialog,
+                      AppShortcut.deleteCard.isActive(in: shortcutContext) else {
+                    return event
+                }
+                deleteSelectedCard()
+                return nil
+            case .deleteForward:
+                guard modifiers.isEmpty, case .none = activeDialog,
+                      AppShortcut.deleteCardForward.isActive(in: shortcutContext) else {
+                    return event
+                }
+                deleteSelectedCard()
+                return nil
             case .carriageReturn, .newline, .enter:
                 // Confirm pending delete alert via Enter
                 if case .confirmDelete(let cardId) = activeDialog {
