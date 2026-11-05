@@ -171,12 +171,17 @@ struct SessionHistoryView: View {
                         .background(ScrollViewCapture(scrollState: scrollState))
                     }
                     .onAppear {
+                        isAtBottom = true
+                        isNearTop = false
                         scrollToBottom(proxy: proxy, force: true)
                         armAutoLoad()
                     }
                     .onChange(of: sessionPath) {
                         autoLoadEnabled = false
+                        isAtBottom = true
+                        isNearTop = false
                         scrollState.stopPreserving()
+                        scrollToBottom(proxy: proxy, force: true)
                         armAutoLoad()
                     }
                     .onChange(of: turns.count) {
@@ -895,9 +900,10 @@ private struct NearTopDetector: NSViewRepresentable {
         }
 
         @objc func boundsChanged(_ notification: Notification) {
-            guard let clipView = notification.object as? NSClipView else { return }
+            guard let clipView = notification.object as? NSClipView,
+                  let documentView = clipView.documentView else { return }
             let scrollOffset = clipView.bounds.origin.y
-            let nearTop = scrollOffset < 300
+            let nearTop = documentView.frame.height > clipView.bounds.height && scrollOffset < 300
             if isNearTop.wrappedValue != nearTop {
                 DispatchQueue.main.async { [isNearTop] in
                     isNearTop.wrappedValue = nearTop

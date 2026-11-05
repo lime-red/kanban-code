@@ -117,7 +117,7 @@ struct ChatView: View {
                     Spacer()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            } else {
             ZStack(alignment: .bottom) {
                 ChatMessageList(
                     turns: turns,
@@ -221,6 +221,7 @@ struct ChatView: View {
                     }
                 }
                 .animation(.easeInOut(duration: 0.18), value: sideChat?.state.isOpen)
+            }
             }
 
             if tmuxSessionName != nil {
@@ -497,9 +498,10 @@ private struct ChatMessageList: View {
         ScrollView {
             messageListContent
         }
+        .defaultScrollAnchor(.bottom)
         .contentMargins(.top, chatTopPillMargin, for: .scrollContent)
         .scrollPosition($scrollPosition)
-        .modifier(ScrollBottomTracker(isAtBottom: $isAtBottom, hasNewMessages: $hasNewMessages, shouldAutoScroll: $shouldAutoScroll))
+        .modifier(ScrollBottomTracker(isAtBottom: $isAtBottom, hasNewMessages: $hasNewMessages, shouldAutoScroll: $shouldAutoScroll, scrollPosition: $scrollPosition, firstVisibleLineNumber: $firstVisibleLineNumber))
         .modifier(ScrollNearTopDetector(isNearTop: $isNearTop))
         .onScrollPhaseChange { _, newPhase in scrollPhase = newPhase }
         .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y }) { oldY, newY in
@@ -512,6 +514,7 @@ private struct ChatMessageList: View {
                 || scrollPhase == .decelerating
             if isReaderScroll, newY < oldY, newY < 50 { loadMoreNow() }
         }
+        .id(turns.isEmpty)
         .onChange(of: turns.count) {
             // Load completed: clear the loading marker so the spinner
             // hides immediately and a new load can be triggered.
@@ -665,8 +668,11 @@ private struct ChatMessageList: View {
             highlightedLineNumber = nil
             lastSeenLineNumber = new.last
             isAtBottom = true
+            isNearTop = false
             hasNewMessages = false
             shouldAutoScroll = true
+            expandedTextBlocks.removeAll()
+            expandedToolRuns.removeAll()
             loadMoreTask?.cancel()
             loadMoreTask = nil
             firstVisibleLineNumber = nil
@@ -695,11 +701,16 @@ private struct ChatMessageList: View {
         if transition.prepended, let anchor = firstVisibleLineNumber {
             // Older turns arrived above: keep the row the reader was on in
             // place, even when a live session appended in the same update.
+            firstVisibleLineNumber = nil
             scrollPosition.scrollTo(id: anchor, anchor: .top)
         } else if transition.appended, activeQuery.isEmpty {
             let isInitial = lastSeenLineNumber == nil
             let isNewAtBottom = new.last != lastSeenLineNumber
             if isInitial || (isNewAtBottom && shouldAutoScroll) {
+                isAtBottom = true
+                isNearTop = false
+                hasNewMessages = false
+                shouldAutoScroll = true
                 scrollPosition.scrollTo(edge: .bottom)
             } else if isNewAtBottom {
                 hasNewMessages = true
@@ -900,6 +911,7 @@ private struct ChatMessageList: View {
                     Color.clear.frame(height: 48)
                         .id("bottom-spacer")
                 }
+                .scrollTargetLayout()
                 .padding(.horizontal, 16)
                 .textSelection(.enabled)
                 .environment(\.chatSelectionCoordinator, selectionCoordinator)
@@ -1412,6 +1424,8 @@ private struct ScrollBottomTracker: ViewModifier {
     @Binding var isAtBottom: Bool
     @Binding var hasNewMessages: Bool
     @Binding var shouldAutoScroll: Bool
+    @Binding var scrollPosition: ScrollPosition
+    @Binding var firstVisibleLineNumber: Int?
 
     /// True while the user is actively driving the scroll (touch / mouse /
     /// momentum). We only demote `shouldAutoScroll` during these phases so
@@ -1440,6 +1454,8 @@ private struct ScrollBottomTracker: ViewModifier {
                 if newAtBottom {
                     hasNewMessages = false
                     shouldAutoScroll = true
+                    firstVisibleLineNumber = nil
+                    scrollPosition = ScrollPosition(edge: .bottom)
                 } else if userDrivenScroll {
                     // The user scrolled away from the bottom — disable
                     // auto-scroll immediately. Without this, `shouldAutoScroll`
@@ -1616,7 +1632,7 @@ private struct ScrollNearTopDetector: ViewModifier {
 
     func body(content: Content) -> some View {
         content.onScrollGeometryChange(for: Bool.self, of: { geo in
-            geo.contentOffset.y < 50
+            geo.contentSize.height > geo.containerSize.height && geo.contentOffset.y < 50
         }, action: { _, newNearTop in
             guard newNearTop != isNearTop else { return }
             isNearTop = newNearTop
