@@ -33,4 +33,47 @@ struct KeyboardShortcutsTests {
             canResumeAssistant: false
         )))
     }
+
+    @Test("delete card shortcuts are inactive when prompt editor is focused, palette is open, or no card is selected")
+    func deleteCardShortcutsRespectFocusAndSelection() {
+        let activeBoardContext = AppShortcutContext(
+            paletteOpen: false,
+            detailOpen: true,
+            expandedDetail: false,
+            promptEditorFocused: false,
+            hasSelectedCard: true
+        )
+        #expect(AppShortcut.deleteCard.isActive(in: activeBoardContext))
+        #expect(AppShortcut.deleteCardForward.isActive(in: activeBoardContext))
+
+        let promptFocusedContext = AppShortcutContext(
+            paletteOpen: false,
+            detailOpen: true,
+            expandedDetail: false,
+            promptEditorFocused: true,
+            hasSelectedCard: true
+        )
+        #expect(!AppShortcut.deleteCard.isActive(in: promptFocusedContext))
+        #expect(!AppShortcut.deleteCardForward.isActive(in: promptFocusedContext))
+
+        let paletteOpenContext = AppShortcutContext(
+            paletteOpen: true,
+            detailOpen: true,
+            expandedDetail: false,
+            promptEditorFocused: false,
+            hasSelectedCard: true
+        )
+        #expect(!AppShortcut.deleteCard.isActive(in: paletteOpenContext))
+        #expect(!AppShortcut.deleteCardForward.isActive(in: paletteOpenContext))
+
+        let noSelectionContext = AppShortcutContext(
+            paletteOpen: false,
+            detailOpen: false,
+            expandedDetail: false,
+            promptEditorFocused: false,
+            hasSelectedCard: false
+        )
+        #expect(!AppShortcut.deleteCard.isActive(in: noSelectionContext))
+        #expect(!AppShortcut.deleteCardForward.isActive(in: noSelectionContext))
+    }
 }
