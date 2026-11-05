@@ -150,11 +150,12 @@ private struct ChatMessageBody: View {
             thresholdMs: 8,
             metadata: "chars=\(displayText.count) links=\(linksActive)"
         ) {
-            SelectableMarkdownText(
+            ChatText(
                 content: content,
                 appearance: .init(font: .app(.body), foregroundColor: .labelColor),
                 links: links
             )
+            .id(isTruncated)
         }
     }
 

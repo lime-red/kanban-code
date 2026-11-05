@@ -401,11 +401,12 @@ struct ThinkingCard: View {
             if isExpanded {
                 let truncated = !showFullText && text.count > Self.truncationLimit
                 let display = truncated ? String(text.prefix(Self.truncationLimit)) : text
-                SelectableMarkdownText(
+                ChatText(
                     content: .plain(display),
                     appearance: .init(font: .app(.caption), foregroundColor: .secondaryLabelColor),
                     highlight: highlight
                 )
+                .id(truncated)
                 .padding(.top, 4)
                 if truncated {
                     Button {
