@@ -30,8 +30,56 @@ struct ChatMessageView: View, Equatable {
     var toolRunIsFinished: Bool = false
     @Binding var expandedTextBlocks: Set<String>
     @Binding var expandedToolRuns: Set<String>
+    private let expandedTextBlocksSnapshot: Set<String>
+    private let expandedToolRunsSnapshot: Set<String>
     @State private var isHovered = false
     @State private var showsCompactionSummary = false
+
+    init(
+        turn: ConversationTurn,
+        assistant: CodingAssistant,
+        toolResultMap: [String: ContentBlock] = [:],
+        isLastInGroup: Bool = true,
+        onCopy: ((String) -> Void)? = nil,
+        onFork: (() -> Void)? = nil,
+        onCheckpoint: ((ConversationTurn) -> Void)? = nil,
+        onSendAnswer: ((String) -> Void)? = nil,
+        onContinueInConversation: ((String) -> Void)? = nil,
+        onContinueUserMessage: (() -> Void)? = nil,
+        suppressBackground: Bool = false,
+        highlightText: String? = nil,
+        isCurrentMatch: Bool = false,
+        sessionPath: String? = nil,
+        tmuxSessionName: String? = nil,
+        hasLastToolCall: Bool = false,
+        githubBaseURL: String? = nil,
+        toolRunIsFinished: Bool = false,
+        expandedTextBlocks: Binding<Set<String>>,
+        expandedToolRuns: Binding<Set<String>>
+    ) {
+        self.turn = turn
+        self.assistant = assistant
+        self.toolResultMap = toolResultMap
+        self.isLastInGroup = isLastInGroup
+        self.onCopy = onCopy
+        self.onFork = onFork
+        self.onCheckpoint = onCheckpoint
+        self.onSendAnswer = onSendAnswer
+        self.onContinueInConversation = onContinueInConversation
+        self.onContinueUserMessage = onContinueUserMessage
+        self.suppressBackground = suppressBackground
+        self.highlightText = highlightText
+        self.isCurrentMatch = isCurrentMatch
+        self.sessionPath = sessionPath
+        self.tmuxSessionName = tmuxSessionName
+        self.hasLastToolCall = hasLastToolCall
+        self.githubBaseURL = githubBaseURL
+        self.toolRunIsFinished = toolRunIsFinished
+        self._expandedTextBlocks = expandedTextBlocks
+        self._expandedToolRuns = expandedToolRuns
+        self.expandedTextBlocksSnapshot = expandedTextBlocks.wrappedValue
+        self.expandedToolRunsSnapshot = expandedToolRuns.wrappedValue
+    }
 
     /// A row is worth building again only when what it shows has changed.
     ///
@@ -54,8 +102,8 @@ struct ChatMessageView: View, Equatable {
             && lhs.hasLastToolCall == rhs.hasLastToolCall
             && lhs.githubBaseURL == rhs.githubBaseURL
             && lhs.toolRunIsFinished == rhs.toolRunIsFinished
-            && lhs.expandedTextBlocks == rhs.expandedTextBlocks
-            && lhs.expandedToolRuns == rhs.expandedToolRuns
+            && lhs.expandedTextBlocksSnapshot == rhs.expandedTextBlocksSnapshot
+            && lhs.expandedToolRunsSnapshot == rhs.expandedToolRunsSnapshot
     }
 
     /// Max characters to render before truncating with "Show more".
@@ -432,6 +480,7 @@ struct ChatMessageView: View, Equatable {
             appearance: textAppearance(for: content, font: font),
             highlight: searchHighlight
         )
+        .id(truncated)
         if truncated {
             Button {
                 expandedTextBlocks.insert(blockKey(blockIndex))
@@ -486,6 +535,7 @@ struct ChatMessageView: View, Equatable {
                     font: .app(.caption), foregroundColor: color, italic: true
                 )
             )
+            .id(truncated)
             if truncated {
                 Button {
                     expandedTextBlocks.insert(blockKey(blockIndex))

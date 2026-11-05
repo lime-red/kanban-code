@@ -1,4 +1,5 @@
 import AppKit
+import KanbanCodeCore
 import MarkdownUI
 import SwiftUI
 import Testing
@@ -299,5 +300,76 @@ struct ChatTextHeightTests {
         #expect(
             ChatTextMeasurement.size(of: loose, width: Self.width).height
                 > ChatTextMeasurement.size(of: tight, width: Self.width).height)
+    }
+
+    @Test("configuring expanded content reports overflow without requiring a second setFrameSize or losing to TextKit self-resize")
+    func configureAloneReportsOverflowAndDoesNotSelfResize() async {
+        let full = String(repeating: "Line of output in a large section that expands.\n", count: 120)
+        let truncated = String(full.prefix(400))
+
+        let view = SelectableMarkdownText.WrappingTextView.make()
+        var reported: CGFloat?
+        view.onHeightOverflow = { reported = $0 }
+
+        view.configure(content: .plain(truncated), appearance: Self.appearance, highlight: nil)
+        let short = view.fittingSize(forWidth: Self.width)
+        view.setFrameSize(short)
+        #expect(reported == nil)
+
+        // Simulate clicking "Show more": updateNSView calls configure() without SwiftUI
+        // calling setFrameSize(short) again, and TextKit lays out the full text.
+        view.configure(content: .plain(full), appearance: Self.appearance, highlight: nil)
+        if let layout = view.layoutManager, let container = view.textContainer {
+            layout.ensureLayout(for: container)
+        }
+        // Frame must stay at what SwiftUI assigned until SwiftUI updates it, not self-resize.
+        #expect(view.frame.height == short.height)
+
+        try? await Task.sleep(for: .milliseconds(50))
+
+        let needed = view.fittingSize(forWidth: Self.width).height
+        #expect(reported == needed)
+        #expect((reported ?? 0) > short.height)
+    }
+
+    @Test("ChatMessageView Equatable detects expandedTextBlocks mutation across shared binding storage")
+    func chatMessageViewEquatableDetectsBindingMutation() {
+        var backingBlocks: Set<String> = []
+        let blocksBinding = Binding<Set<String>>(
+            get: { backingBlocks },
+            set: { backingBlocks = $0 }
+        )
+        var backingRuns: Set<String> = []
+        let runsBinding = Binding<Set<String>>(
+            get: { backingRuns },
+            set: { backingRuns = $0 }
+        )
+
+        let turn = ConversationTurn(
+            index: 0,
+            lineNumber: 100,
+            role: "assistant",
+            textPreview: "Preview",
+            contentBlocks: [.init(kind: .text, text: String(repeating: "a", count: 5_000))]
+        )
+
+        let before = ChatMessageView(
+            turn: turn,
+            assistant: .claude,
+            expandedTextBlocks: blocksBinding,
+            expandedToolRuns: runsBinding
+        )
+
+        // Mutate the underlying storage through the binding (as clicking "Show more" does).
+        blocksBinding.wrappedValue.insert("100_0")
+
+        let after = ChatMessageView(
+            turn: turn,
+            assistant: .claude,
+            expandedTextBlocks: blocksBinding,
+            expandedToolRuns: runsBinding
+        )
+
+        #expect(before != after)
     }
 }
