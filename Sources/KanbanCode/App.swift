@@ -776,6 +776,7 @@ extension Notification.Name {
     static let kanbanCodeAddLink = Notification.Name("kanbanCodeAddLink")
     static let kanbanCodeOpenProject = Notification.Name("kanbanCodeOpenProject")
     static let kanbanCodeCLICommand = Notification.Name("kanbanCodeCLICommand")
+    static let kanbanCodeSwitchToTerminal = Notification.Name("kanbanCodeSwitchToTerminal")
     static let browserFocusAddressBar = Notification.Name("browserFocusAddressBar")
     static let browserReload = Notification.Name("browserReload")
     static let renameSelectedCard = Notification.Name("renameSelectedCard")

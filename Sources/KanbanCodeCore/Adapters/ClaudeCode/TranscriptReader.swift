@@ -1131,7 +1131,11 @@ public enum TranscriptReader {
             let multiSelect = q["multiSelect"] as? Bool ?? false
             let options: [AskQuestionOption] = (q["options"] as? [[String: Any]] ?? []).compactMap { opt in
                 guard let label = opt["label"] as? String else { return nil }
-                return AskQuestionOption(label: label, description: opt["description"] as? String)
+                return AskQuestionOption(
+                    label: label,
+                    description: opt["description"] as? String,
+                    preview: opt["preview"] as? String
+                )
             }
             return AskQuestion(header: header, question: question, options: options, multiSelect: multiSelect)
         }

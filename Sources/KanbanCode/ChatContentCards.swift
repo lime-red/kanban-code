@@ -645,37 +645,159 @@ struct AgentCallCard: View {
 struct AskUserQuestionCard: View {
     let questions: [AskQuestion]
     let resultText: String?
-    var onAnswer: ((String) -> Void)?
+    var cardId: String? = nil
+    var onAnswer: ((String) -> Void)? = nil
+    var onChatAboutThis: (() -> Void)? = nil
+    var onOpenInTerminal: (() -> Void)? = nil
 
-    private var isAnswered: Bool { resultText != nil }
+    @State private var currentQuestionIndex: Int = 0
+    @State private var selections: [Int: Set<Int>] = [:]
+    @State private var customTexts: [Int: String] = [:]
+    @State private var isCustomTextActive: [Int: Bool] = [:]
+    @State private var isSubmitting: Bool = false
+    @State private var submittedSummary: String? = nil
+
+    private var isAnswered: Bool { resultText != nil || submittedSummary != nil }
+
+    private var draftKey: String? {
+        cardId ?? questions.first?.question
+    }
+
+    private var fingerprint: String {
+        questions.map { "\($0.header ?? "")|\($0.question)|\($0.options.count)" }.joined(separator: "::")
+    }
+
+    private var activeQuestion: AskQuestion? {
+        guard !questions.isEmpty else { return nil }
+        let idx = min(max(0, currentQuestionIndex), questions.count - 1)
+        return questions[idx]
+    }
+
+    private var hasAnySelection: Bool {
+        for idx in questions.indices {
+            if !(selections[idx]?.isEmpty ?? true) { return true }
+            if (isCustomTextActive[idx] ?? false),
+               let text = customTexts[idx],
+               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return true
+            }
+        }
+        return false
+    }
+
+    private var allQuestionsAnswered: Bool {
+        questions.indices.allSatisfy { idx in
+            if !(selections[idx]?.isEmpty ?? true) { return true }
+            if (isCustomTextActive[idx] ?? false),
+               let text = customTexts[idx],
+               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return true
+            }
+            return false
+        }
+    }
+
+    private func restoreDraft() {
+        guard let key = draftKey else { return }
+        let draft = PendingQuestionDraftStore.shared.draft(for: key, fingerprint: fingerprint)
+        currentQuestionIndex = min(max(0, draft.questionIndex), max(0, questions.count - 1))
+        selections = draft.selections
+        customTexts = draft.customTexts
+        isCustomTextActive = draft.isCustomTextActive
+    }
+
+    private func persistDraft() {
+        guard let key = draftKey else { return }
+        PendingQuestionDraftStore.shared.updateDraft(for: key) { d in
+            d.questionIndex = currentQuestionIndex
+            d.selections = selections
+            d.customTexts = customTexts
+            d.isCustomTextActive = isCustomTextActive
+            d.fingerprint = fingerprint
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ForEach(questions.indices, id: \.self) { i in
-                questionView(questions[i])
+            if questions.count > 1 {
+                wizardHeader
             }
 
-            if !isAnswered {
-                Text("Waiting for response...")
-                    .font(.app(.caption))
-                    .italic()
-                    .foregroundStyle(.tertiary)
+            if let q = activeQuestion {
+                questionView(q, index: currentQuestionIndex)
             }
+
+            footerView
         }
-        .padding(12)
+        .padding(14)
         .background(
             RoundedRectangle(cornerRadius: 12)
                 .fill(Color.accentColor.opacity(0.04))
                 .strokeBorder(Color.accentColor.opacity(0.12), lineWidth: 1)
         )
+        .onAppear {
+            restoreDraft()
+        }
+        .onChange(of: currentQuestionIndex) { _ in
+            persistDraft()
+        }
     }
 
+    // MARK: - Wizard Navigation Header
+
     @ViewBuilder
-    private func questionView(_ q: AskQuestion) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // Only the prose joins the selection run. The options below are
-            // buttons, and a text view inside one would swallow the click.
-            if let header = q.header {
+    private var wizardHeader: some View {
+        HStack(spacing: 6) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(questions.indices, id: \.self) { i in
+                        let q = questions[i]
+                        let isCurrent = i == currentQuestionIndex
+                        let isAnsweredTab = !(selections[i]?.isEmpty ?? true) ||
+                            ((isCustomTextActive[i] ?? false) && !(customTexts[i]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true))
+                        let title = q.header.flatMap { $0.isEmpty ? nil : $0 } ?? "Q\(i + 1)"
+
+                        Button {
+                            currentQuestionIndex = i
+                        } label: {
+                            HStack(spacing: 4) {
+                                if isAnsweredTab {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(isCurrent ? Color.accentColor : .green)
+                                }
+                                Text(title)
+                                    .font(.app(.callout, weight: isCurrent ? .semibold : .regular))
+                                    .foregroundStyle(isCurrent ? Color.accentColor : .secondary)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(isCurrent ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04))
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            Spacer(minLength: 4)
+
+            Text("\(currentQuestionIndex + 1)/\(questions.count)")
+                .font(.app(.caption))
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    // MARK: - Question View
+
+    @ViewBuilder
+    private func questionView(_ q: AskQuestion, index: Int) -> some View {
+        let hasPreviews = q.options.contains { $0.preview != nil }
+
+        VStack(alignment: .leading, spacing: 8) {
+            if let header = q.header, !header.isEmpty, questions.count <= 1 {
                 SelectableMarkdownText(
                     content: .plain(header),
                     appearance: .init(
@@ -688,45 +810,384 @@ struct AskUserQuestionCard: View {
                 appearance: .init(font: .app(.body), foregroundColor: .labelColor)
             )
 
-            ForEach(q.options.indices, id: \.self) { idx in
-                let option = q.options[idx]
-                let isSelected: Bool = {
-                    guard isAnswered, let result = resultText?.trimmingCharacters(in: .whitespacesAndNewlines) else { return false }
-                    // Prefer exact match, fall back to contains for wrapped responses
-                    return result == option.label || result.hasPrefix(option.label) || result.hasSuffix(option.label)
-                }()
+            if q.multiSelect {
+                Text("Select all that apply")
+                    .font(.app(.caption))
+                    .foregroundStyle(.secondary)
+            }
 
-                Button {
-                    if !isAnswered {
-                        onAnswer?(option.label)
-                    }
-                } label: {
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(isSelected ? Color.accentColor : .secondary)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(option.label).fontWeight(.medium)
-                            if let desc = option.description {
-                                Text(desc)
-                                    .foregroundStyle(.secondary)
-                                    .font(.app(.caption))
+            VStack(spacing: 8) {
+                ForEach(q.options.indices, id: \.self) { optIdx in
+                    let option = q.options[optIdx]
+                    let isSelected: Bool = {
+                        if !isAnswered {
+                            return selections[index]?.contains(optIdx) ?? false
+                        }
+                        let text = resultText ?? submittedSummary ?? ""
+                        return text.contains(option.label)
+                    }()
+
+                    Button {
+                        selectOption(qIndex: index, optIndex: optIdx, multiSelect: q.multiSelect)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: q.multiSelect
+                                      ? (isSelected ? "checkmark.square.fill" : "square")
+                                      : (isSelected ? "checkmark.circle.fill" : "circle"))
+                                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                                    .font(.system(size: 14))
+                                    .padding(.top, 1)
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(option.label)
+                                        .fontWeight(.medium)
+                                        .foregroundStyle(Color.primary)
+                                    if let desc = option.description {
+                                        Text(desc)
+                                            .foregroundStyle(.secondary)
+                                            .font(.app(.caption))
+                                    }
+                                }
+                            }
+
+                            // Show preview inline for all options that provide one
+                            if let preview = option.preview, !preview.isEmpty {
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    Text(preview)
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundStyle(.primary)
+                                        .textSelection(.enabled)
+                                        .padding(8)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(Color(nsColor: .textBackgroundColor).opacity(0.6))
+                                        .strokeBorder(isSelected ? Color.accentColor.opacity(0.3) : Color.primary.opacity(0.08), lineWidth: 1)
+                                )
+                                .padding(.leading, 22)
                             }
                         }
+                        .font(.app(.body))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(isSelected ? Color.accentColor.opacity(0.1) : Color.primary.opacity(0.03))
+                                .strokeBorder(isSelected ? Color.accentColor.opacity(0.25) : Color.clear, lineWidth: 1)
+                        )
+                        .contentShape(Rectangle())
                     }
-                    .font(.app(.body))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(isSelected ? Color.accentColor.opacity(0.1) : Color.primary.opacity(0.03))
-                    )
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .disabled(isAnswered || isSubmitting)
+                    .opacity(isAnswered && !isSelected ? 0.4 : 1)
                 }
-                .buttonStyle(.plain)
-                .disabled(isAnswered)
-                .opacity(isAnswered && !isSelected ? 0.4 : 1)
+
+                // If this question has previews, show an optional notes row; otherwise "Type something..."
+                if hasPreviews {
+                    notesInputView(index: index)
+                } else {
+                    typeSomethingRow(q: q, index: index)
+                }
             }
         }
+    }
+
+    @ViewBuilder
+    private func notesInputView(index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Image(systemName: "square.and.pencil")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Text("Notes (optional)")
+                    .font(.app(.caption, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            TextField("Add notes for this selection...", text: Binding(
+                get: { customTexts[index] ?? "" },
+                set: { newValue in
+                    customTexts[index] = newValue
+                    persistDraft()
+                }
+            ))
+            .textFieldStyle(.roundedBorder)
+            .font(.app(.callout))
+            .disabled(isAnswered || isSubmitting)
+        }
+        .padding(.top, 4)
+    }
+
+    @ViewBuilder
+    private func typeSomethingRow(q: AskQuestion, index: Int) -> some View {
+        let isOtherActive = isCustomTextActive[index] ?? false
+        Button {
+            toggleOther(qIndex: index, multiSelect: q.multiSelect)
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: q.multiSelect
+                          ? (isOtherActive ? "checkmark.square.fill" : "square")
+                          : (isOtherActive ? "checkmark.circle.fill" : "circle"))
+                        .foregroundStyle(isOtherActive ? Color.accentColor : .secondary)
+                        .font(.system(size: 14))
+                        .padding(.top, 2)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Type something...")
+                            .fontWeight(.medium)
+                            .foregroundStyle(Color.primary)
+
+                        if isOtherActive {
+                            TextField("Enter custom response...", text: Binding(
+                                get: { customTexts[index] ?? "" },
+                                set: { newValue in
+                                    customTexts[index] = newValue
+                                    persistDraft()
+                                }
+                            ))
+                            .textFieldStyle(.roundedBorder)
+                            .font(.app(.callout))
+                            .disabled(isAnswered || isSubmitting)
+                        }
+                    }
+                }
+            }
+            .font(.app(.body))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isOtherActive ? Color.accentColor.opacity(0.1) : Color.primary.opacity(0.03))
+                    .strokeBorder(isOtherActive ? Color.accentColor.opacity(0.25) : Color.clear, lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isAnswered || isSubmitting)
+    }
+
+    private func toggleOther(qIndex: Int, multiSelect: Bool) {
+        guard !isAnswered, !isSubmitting else { return }
+        let current = isCustomTextActive[qIndex] ?? false
+        let next = !current
+        isCustomTextActive[qIndex] = next
+        if next && !multiSelect {
+            selections[qIndex] = []
+        }
+        persistDraft()
+    }
+
+    private func selectOption(qIndex: Int, optIndex: Int, multiSelect: Bool) {
+        guard !isAnswered, !isSubmitting else { return }
+        if multiSelect {
+            var currentSet = selections[qIndex] ?? []
+            if currentSet.contains(optIndex) {
+                currentSet.remove(optIndex)
+            } else {
+                currentSet.insert(optIndex)
+            }
+            selections[qIndex] = currentSet
+        } else {
+            selections[qIndex] = [optIndex]
+            isCustomTextActive[qIndex] = false
+        }
+        persistDraft()
+    }
+
+    // MARK: - Footer & Navigation
+
+    @ViewBuilder
+    private var footerView: some View {
+        HStack(spacing: 8) {
+            if isAnswered {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    let text = submittedSummary ?? resultText ?? "Answered"
+                    Text("Answered: \(text)")
+                        .font(.app(.caption))
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                if questions.count > 1 {
+                    Button {
+                        if currentQuestionIndex > 0 {
+                            currentQuestionIndex -= 1
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                            Text("Previous")
+                        }
+                        .font(.app(.caption, weight: .medium))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(currentQuestionIndex == 0 || isSubmitting)
+
+                    if currentQuestionIndex < questions.count - 1 {
+                        Button {
+                            currentQuestionIndex += 1
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text("Next")
+                                Image(systemName: "chevron.right")
+                            }
+                            .font(.app(.caption, weight: .medium))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isSubmitting)
+                    }
+                }
+
+                Spacer()
+
+                Button {
+                    if let onOpenInTerminal {
+                        onOpenInTerminal()
+                    } else {
+                        NotificationCenter.default.post(name: .kanbanCodeSwitchToTerminal, object: cardId)
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "terminal")
+                        Text("Open in Terminal")
+                    }
+                    .font(.app(.callout))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                }
+                .buttonStyle(.plain)
+                .help("Answer directly in the interactive terminal session")
+
+                if let onChatAboutThis {
+                    Button {
+                        if let key = draftKey {
+                            PendingQuestionDraftStore.shared.clear(for: key)
+                        }
+                        onChatAboutThis()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "bubble.left.and.bubble.right")
+                            Text("Chat about this")
+                        }
+                        .font(.app(.callout))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isSubmitting)
+                }
+
+                let isLastQuestion = currentQuestionIndex == questions.count - 1
+                let showSubmit = questions.count == 1 || isLastQuestion || allQuestionsAnswered
+                let canSubmit = hasAnySelection && !isSubmitting
+
+                if showSubmit {
+                    Button {
+                        submitAnswers()
+                    } label: {
+                        HStack(spacing: 6) {
+                            if isSubmitting {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Submitting...")
+                            } else {
+                                Image(systemName: "checkmark")
+                                Text("Submit")
+                            }
+                        }
+                        .font(.app(.body, weight: .medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(canSubmit ? Color.accentColor : Color.secondary.opacity(0.35))
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canSubmit)
+                }
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    private func submitAnswers() {
+        guard !isSubmitting, !isAnswered, hasAnySelection else { return }
+        isSubmitting = true
+        let structured = StructuredQuestionAnswer.format(
+            questions: questions,
+            selections: selections,
+            customTexts: customTexts
+        )
+        submittedSummary = structured.summary
+        if let key = draftKey {
+            PendingQuestionDraftStore.shared.clear(for: key)
+        }
+        if let encoded = structured.encode() {
+            onAnswer?(encoded)
+        } else {
+            onAnswer?(structured.summary)
+        }
+    }
+}
+
+// MARK: - Pending Hook Prompt
+
+/// A question or plan Claude is waiting on but has not written to the
+/// transcript yet, shown under the chat until it is answered.
+struct HookPendingPromptPanel: View {
+    let prompt: HookPendingPrompt
+    var cardId: String? = nil
+    var tmuxSessionName: String?
+    var onAnswer: ((String) -> Void)?
+    var onChatAboutThis: (() -> Void)?
+
+    var body: some View {
+        HStack {
+            Spacer(minLength: 0)
+            ScrollView {
+                Group {
+                    switch prompt.content {
+                    case .question(let questions):
+                        AskUserQuestionCard(
+                            questions: questions,
+                            resultText: nil,
+                            cardId: cardId,
+                            onAnswer: onAnswer,
+                            onChatAboutThis: onChatAboutThis,
+                            onOpenInTerminal: {
+                                NotificationCenter.default.post(name: .kanbanCodeSwitchToTerminal, object: cardId)
+                            }
+                        )
+                    case .plan(let plan):
+                        PlanModeExitCard(
+                            plan: plan,
+                            resultText: nil,
+                            onAnswer: onAnswer,
+                            tmuxSessionName: tmuxSessionName
+                        )
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            .frame(maxWidth: chatMaxWidth)
+            .frame(maxHeight: 360)
+            .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 6)
+        .accessibilityIdentifier("hook-pending-prompt")
     }
 }
 

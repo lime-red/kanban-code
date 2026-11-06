@@ -58,7 +58,8 @@ extension MasterEngine {
                 mark = AttentionScanMark(size: size, modified: modified, pending: pending, lastLineAt: lastLineAt)
                 attentionScanMarks[path] = mark
             }
-            reconcileAttention(cardId: candidate.cardId, sessionId: candidate.sessionId, mark: mark)
+            reconcileAttention(cardId: candidate.cardId, sessionId: candidate.sessionId,
+                               mark: withHookPrompt(mark, cardId: candidate.cardId, sessionId: candidate.sessionId, path: path))
             reconcileRushPermission(cardId: candidate.cardId, sessionId: candidate.sessionId)
         }
         attentionScanMarks = attentionScanMarks.filter { seenPaths.contains($0.key) }
@@ -169,13 +170,27 @@ extension MasterEngine {
         return text.isEmpty ? "Waiting for your permission" : text
     }
 
+    /// A question or plan the transcript does not show yet because Claude
+    /// Code writes it only once answered: the PermissionRequest hook left a
+    /// copy. Rush sessions answer by tool call id, which the hook does not
+    /// carry, and write their questions to the transcript anyway.
+    func withHookPrompt(_ mark: AttentionScanMark?, cardId: String, sessionId: String, path: String) -> AttentionScanMark? {
+        guard mark?.pending == nil else { return mark }
+        if let session = store.state.links[cardId]?.tmuxLink?.sessionName, RushSessionName.isRush(session) { return mark }
+        guard let prompt = HookPendingPromptStore.pending(sessionId: sessionId, transcriptPath: path) else { return mark }
+        var mark = mark ?? AttentionScanMark(size: 0, modified: .distantPast, pending: nil, lastLineAt: nil)
+        mark.pending = prompt.decision
+        return mark
+    }
+
     /// Follows the hook events of attention: a permission prompt raises a
     /// request, a stop or a prompt ends it.
     public func handleAttentionHook(_ event: HookEvent) {
         switch HookManager.normalizeEventName(event.eventName) {
         case "Notification":
             raisePermissionRequest(sessionId: event.sessionId, message: event.message, at: event.timestamp)
-        case "Stop", "UserPromptSubmit":
+        case "Stop", "UserPromptSubmit", "SessionEnd":
+            HookPendingPromptStore.remove(sessionId: event.sessionId, ifWrittenBefore: event.timestamp)
             sessionMovedOn(sessionId: event.sessionId)
         default:
             break
@@ -242,12 +257,14 @@ extension MasterEngine {
             store.dispatch(.attentionResolved(id: id, resolution: resolution, by: device, note: note, noteUntil: noteUntil))
             return
         }
+        let structured = StructuredQuestionAnswer.decode(from: resolution)
+        let storedResolution = structured?.summary ?? resolution
         if request.kind != .vaultApproval {
             try await answerInSession(request, resolution: resolution)
         } else if let unsealed {
             await vaultUnsealed?(id, unsealed)
         }
-        store.dispatch(.attentionResolved(id: id, resolution: resolution, by: device, note: note, noteUntil: noteUntil))
+        store.dispatch(.attentionResolved(id: id, resolution: storedResolution, by: device, note: note, noteUntil: noteUntil))
     }
 
     /// The note of a refusal answered with `noteFollows`: the vault sends
@@ -319,12 +336,21 @@ extension MasterEngine {
             return
         }
         let adapter = try tmux.adapter(for: session)
-        let keys = Self.tmuxKeys(for: request, resolution: resolution, optionIndex: index)
+        let structured = StructuredQuestionAnswer.decode(from: resolution)
+        let keys: [String]
+        if let structured {
+            keys = structured.keys
+        } else {
+            keys = Self.tmuxKeys(for: request, resolution: resolution, optionIndex: index)
+        }
         if keys.isEmpty {
             try await tmux.sendPrompt(to: session, text: resolution)
             return
         }
-        for key in keys {
+        for (i, key) in keys.enumerated() {
+            if i > 0 {
+                try? await Task.sleep(for: .milliseconds(40))
+            }
             _ = try await adapter.run(["send-keys", "-t", session, key])
         }
     }

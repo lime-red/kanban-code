@@ -12,7 +12,9 @@ import Foundation
 ///
 /// AskUserQuestion and ExitPlanMode go through the same prompt but are a
 /// question and a plan for the user, so they fall through, and so does any
-/// prompt in plan mode.
+/// prompt in plan mode. A question or plan also leaves a copy of the payload
+/// for ``HookPendingPromptStore``: the transcript shows neither until it is
+/// answered.
 public enum PermissionHook {
     public static let marker = ".kanban-code/permission-hook.sh"
     public static let event = "PermissionRequest"
@@ -27,7 +29,19 @@ public enum PermissionHook {
     # Every tool permission is allowed; the vault guards credentials.
     # Questions, plan approvals and plan mode fall through to the user.
     input=$(cat)
-    if printf '%s' "$input" | grep -Eq '"tool_name" *: *"(AskUserQuestion|ExitPlanMode)"|"permission_mode" *: *"plan"'; then
+    if printf '%s' "$input" | grep -Eq '"tool_name" *: *"(AskUserQuestion|ExitPlanMode)"'; then
+      # Claude Code writes a question to the transcript only once it is
+      # answered, so a copy is left for Kanban Code's chat to show meanwhile.
+      sid=$(printf '%s' "$input" | grep -o '"session_id" *: *"[^"]*"' | head -1 | sed 's/.*"\\([^"]*\\)"$/\\1/')
+      case "$sid" in ''|*[!A-Za-z0-9_-]*) ;; *)
+        dir="$HOME/.kanban-code/pending-prompts"
+        mkdir -p "$dir" 2>/dev/null &&
+          printf '%s' "$input" > "$dir/$sid.json.tmp" 2>/dev/null &&
+          mv -f "$dir/$sid.json.tmp" "$dir/$sid.json" 2>/dev/null
+      esac
+      exit 0
+    fi
+    if printf '%s' "$input" | grep -Eq '"permission_mode" *: *"plan"'; then
       exit 0
     fi
     printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'

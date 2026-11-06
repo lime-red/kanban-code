@@ -767,10 +767,12 @@ public enum LinkSource: String, Codable, Sendable {
 public struct AskQuestionOption: Sendable, Equatable {
     public let label: String
     public let description: String?
+    public let preview: String?
 
-    public init(label: String, description: String? = nil) {
+    public init(label: String, description: String? = nil, preview: String? = nil) {
         self.label = label
         self.description = description
+        self.preview = preview
     }
 }
 
