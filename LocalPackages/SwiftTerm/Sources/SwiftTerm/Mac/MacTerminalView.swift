@@ -2266,7 +2266,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     /// and 5 (down), one report per line turned, as xterm sends it. A
     /// trackpad turns fractions of a line per event, so they add up until a
     /// whole line is reached; turning the other way starts over.
-    func sendWheel(with event: NSEvent) {
+    public func sendWheel(with event: NSEvent) {
         if (pendingWheelLines > 0) != (event.deltaY > 0) {
             pendingWheelLines = 0
         }

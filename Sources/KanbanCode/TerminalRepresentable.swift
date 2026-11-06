@@ -55,7 +55,14 @@ final class BatchedTerminalView: LocalProcessTerminalView {
     /// tmux repaints the whole screen, so its terminals can skip frames.
     var lossless = false
 
-    private var dropsFrames: Bool { !passthroughMode && !lossless }
+    /// Whether the terminal is running an interactive full-screen application
+    /// (alternate screen buffer or mouse tracking enabled, e.g. Claude Code TUI, vim, htop).
+    /// Such applications manage their own screen diffs; dropping bytes corrupts the display.
+    var isInteractiveTUI: Bool {
+        terminal.isCurrentBufferAlternate || terminal.mouseMode != .off
+    }
+
+    var dropsFrames: Bool { !passthroughMode && !lossless && !isInteractiveTUI }
 
     // Stats collection
     private var statsReceiveCount = 0
@@ -108,6 +115,8 @@ final class BatchedTerminalView: LocalProcessTerminalView {
             }
         }
 
+        let isInteractive = passthroughMode || lossless || isInteractiveTUI
+
         // Small chunks (typing, cursor moves): feed directly on this main-thread
         // call — zero scheduling overhead for instant keystroke response.
         // Large chunks (Claude streaming): batch to avoid frame-per-byte overhead.
@@ -124,17 +133,19 @@ final class BatchedTerminalView: LocalProcessTerminalView {
             pendingData.removeAll(keepingCapacity: true)
             pendingOffset = 0
         } else {
-            // Batched: reset the flush timer on every data arrival.
             let now = DispatchTime.now().uptimeNanoseconds
-            let delay: UInt64 = passthroughMode ? 8_000_000 : 32_000_000 // 8ms or 32ms
-            scheduledFlushTime = now + delay
+            let delay: UInt64 = isInteractive ? 8_000_000 : 32_000_000 // 8ms or 32ms
 
             if !flushScheduled {
                 flushScheduled = true
-                let deadline: DispatchTimeInterval = passthroughMode ? .milliseconds(8) : Self.batchDelay
+                scheduledFlushTime = now + delay
+                let deadline: DispatchTimeInterval = isInteractive ? .milliseconds(8) : Self.batchDelay
                 DispatchQueue.main.asyncAfter(deadline: .now() + deadline) { [weak self] in
                     self?.checkAndProcess()
                 }
+            } else if !isInteractive {
+                // Non-interactive streaming: push flush timer out until data pauses
+                scheduledFlushTime = now + delay
             }
         }
     }
@@ -709,6 +720,17 @@ final class TerminalCache {
             if RushSessionName.isRush(session) { return event }
 
             let inCopyMode = self?.copyModeSessions.contains(session) ?? false
+
+            // A fullscreen TUI inside tmux (e.g. Claude Code with `"tui": "fullscreen"`)
+            // runs on the alternate screen with mouse tracking enabled (`mouseMode != .off`).
+            // In that mode tmux has no scrollback history of its own and forwards wheel
+            // reports to the pane while native click-and-drag text selection stays local.
+            if !inCopyMode,
+               let terminal = self?.terminals[session],
+               terminal.getTerminal().mouseMode != .off {
+                terminal.sendWheel(with: event)
+                return nil
+            }
 
             // After exiting copy-mode, ignore scroll events for 500ms
             // to prevent residual trackpad momentum from re-entering.
