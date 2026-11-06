@@ -388,6 +388,7 @@ private struct ChatMessageList: View {
     /// when user sends a message, clicks "New messages", or scrolls back to bottom.
     @State private var shouldAutoScroll = true
     @State private var scrollPosition = ScrollPosition(edge: .bottom)
+    @State private var autoScrollAnchor: CGPoint?
 
     /// Carries a drag from one message's text view into the next.
     @State private var selectionCoordinator = ChatSelectionCoordinator()
@@ -497,6 +498,22 @@ private struct ChatMessageList: View {
     private var scrollViewWithTracking: some View {
         ScrollView {
             messageListContent
+                .background(
+                    MiddleClickAutoScrollBridge(
+                        anchorPoint: $autoScrollAnchor,
+                        onUserScrollUp: { newY in
+                            shouldAutoScroll = false
+                            if newY < 50 { loadMoreNow() }
+                        }
+                    )
+                )
+        }
+        .overlay(alignment: .topLeading) {
+            if let anchor = autoScrollAnchor {
+                MiddleClickAutoScrollIndicator()
+                    .position(x: anchor.x, y: anchor.y)
+                    .allowsHitTesting(false)
+            }
         }
         .defaultScrollAnchor(.bottom)
         .contentMargins(.top, chatTopPillMargin, for: .scrollContent)
@@ -1651,6 +1668,258 @@ struct FailedPromptBubble: View {
             }
             .buttonStyle(.borderless)
             .font(.app(.caption))
+        }
+    }
+}
+
+// MARK: - Middle-Click Auto-Scroll
+
+/// Pure state machine for browser-style middle-click autoscrolling.
+/// Supports both click-to-toggle autoscroll and hold-and-drag autoscroll.
+struct MiddleClickAutoScrollState: Equatable {
+    static let deadzone: CGFloat = 12
+    static let dragThreshold: CGFloat = 12
+    static let maxStepPerTick: CGFloat = 60
+
+    var isActive: Bool = false
+    var anchorInWindow: CGPoint = .zero
+    var anchorInViewport: CGPoint = .zero
+    var currentInWindow: CGPoint = .zero
+    var didDrag: Bool = false
+
+    /// Handles a middle mouse button press (`buttonNumber == 2`).
+    /// Returns `true` if autoscroll is now active, or `false` if it was toggled off.
+    @discardableResult
+    mutating func handleMiddleDown(locationInWindow: CGPoint, locationInViewport: CGPoint) -> Bool {
+        if isActive {
+            stop()
+            return false
+        }
+        isActive = true
+        anchorInWindow = locationInWindow
+        anchorInViewport = locationInViewport
+        currentInWindow = locationInWindow
+        didDrag = false
+        return true
+    }
+
+    mutating func handlePointerMove(locationInWindow: CGPoint, isDragged: Bool) {
+        guard isActive else { return }
+        currentInWindow = locationInWindow
+        if isDragged,
+           hypot(locationInWindow.x - anchorInWindow.x, locationInWindow.y - anchorInWindow.y) > Self.dragThreshold {
+            didDrag = true
+        }
+    }
+
+    mutating func handleMiddleUp(locationInWindow: CGPoint) {
+        guard isActive else { return }
+        currentInWindow = locationInWindow
+        if didDrag {
+            stop()
+        }
+    }
+
+    mutating func stop() {
+        isActive = false
+        didDrag = false
+    }
+
+    /// Vertical scroll delta (in flipped document coordinates) per 60Hz frame.
+    /// In AppKit window coordinates, positive `dy` means the pointer moved above
+    /// the anchor (scroll up -> negative step in flipped document coordinates).
+    var stepYPerTick: CGFloat {
+        guard isActive else { return 0 }
+        let dy = currentInWindow.y - anchorInWindow.y
+        let distance = abs(dy)
+        guard distance > Self.deadzone else { return 0 }
+        let effective = distance - Self.deadzone
+        let speed = min(Self.maxStepPerTick, (effective * 0.15) + (effective * effective * 0.0012))
+        return dy > 0 ? -speed : speed
+    }
+}
+
+private struct MiddleClickAutoScrollIndicator: View {
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(.ultraThinMaterial)
+                .frame(width: 28, height: 28)
+                .overlay(
+                    Circle()
+                        .strokeBorder(Color.primary.opacity(0.25), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.2), radius: 4, y: 1)
+            Image(systemName: "arrow.up.and.down")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.primary)
+        }
+    }
+}
+
+private struct MiddleClickAutoScrollBridge: NSViewRepresentable {
+    @Binding var anchorPoint: CGPoint?
+    var onUserScrollUp: (CGFloat) -> Void
+
+    func makeNSView(context: Context) -> BridgeView {
+        let view = BridgeView()
+        view.onAnchorChanged = { point in
+            anchorPoint = point
+        }
+        view.onUserScrollUp = onUserScrollUp
+        return view
+    }
+
+    func updateNSView(_ nsView: BridgeView, context: Context) {
+        nsView.onAnchorChanged = { point in
+            anchorPoint = point
+        }
+        nsView.onUserScrollUp = onUserScrollUp
+    }
+
+    static func dismantleNSView(_ nsView: BridgeView, coordinator: ()) {
+        nsView.teardown()
+    }
+
+    final class BridgeView: NSView {
+        var onAnchorChanged: ((CGPoint?) -> Void)?
+        var onUserScrollUp: ((CGFloat) -> Void)?
+
+        private var state = MiddleClickAutoScrollState()
+        private var eventMonitor: Any?
+        private var scrollTimer: Timer?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window != nil {
+                installMonitorIfNeeded()
+            } else {
+                teardown()
+            }
+        }
+
+        func teardown() {
+            stopAutoScroll()
+            if let monitor = eventMonitor {
+                NSEvent.removeMonitor(monitor)
+                eventMonitor = nil
+            }
+        }
+
+        private func installMonitorIfNeeded() {
+            guard eventMonitor == nil else { return }
+            let mask: NSEvent.EventTypeMask = [
+                .otherMouseDown, .otherMouseDragged, .otherMouseUp,
+                .mouseMoved, .leftMouseDown, .rightMouseDown,
+                .scrollWheel, .keyDown
+            ]
+            eventMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+                guard let self else { return event }
+                return self.handleEvent(event)
+            }
+        }
+
+        private func handleEvent(_ event: NSEvent) -> NSEvent? {
+            guard let window = self.window,
+                  let scrollView = self.enclosingScrollView else {
+                return event
+            }
+
+            switch event.type {
+            case .otherMouseDown where event.buttonNumber == 2:
+                if state.isActive {
+                    stopAutoScroll()
+                    return nil
+                }
+                guard event.window === window else { return event }
+                let localPoint = scrollView.convert(event.locationInWindow, from: nil)
+                guard scrollView.bounds.contains(localPoint) else { return event }
+                let viewportY = scrollView.isFlipped ? localPoint.y : (scrollView.bounds.height - localPoint.y)
+                let viewportPoint = CGPoint(x: localPoint.x, y: viewportY)
+                state.handleMiddleDown(locationInWindow: event.locationInWindow, locationInViewport: viewportPoint)
+                onAnchorChanged?(viewportPoint)
+                startTimerIfNeeded()
+                return nil
+
+            case .otherMouseDragged where event.buttonNumber == 2:
+                guard state.isActive else { return event }
+                state.handlePointerMove(locationInWindow: event.locationInWindow, isDragged: true)
+                return nil
+
+            case .otherMouseUp where event.buttonNumber == 2:
+                guard state.isActive else { return event }
+                state.handleMiddleUp(locationInWindow: event.locationInWindow)
+                if !state.isActive {
+                    stopAutoScroll()
+                }
+                return nil
+
+            case .mouseMoved:
+                guard state.isActive else { return event }
+                state.handlePointerMove(locationInWindow: event.locationInWindow, isDragged: false)
+                return event
+
+            case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+                guard state.isActive else { return event }
+                stopAutoScroll()
+                return nil
+
+            case .scrollWheel:
+                if state.isActive {
+                    stopAutoScroll()
+                }
+                return event
+
+            case .keyDown:
+                if state.isActive && event.keyCode == 53 { // Escape
+                    stopAutoScroll()
+                    return nil
+                }
+                return event
+
+            default:
+                return event
+            }
+        }
+
+        private func startTimerIfNeeded() {
+            guard scrollTimer == nil else { return }
+            let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.tickScroll()
+                }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            scrollTimer = timer
+        }
+
+        private func stopAutoScroll() {
+            state.stop()
+            scrollTimer?.invalidate()
+            scrollTimer = nil
+            onAnchorChanged?(nil)
+        }
+
+        @MainActor
+        private func tickScroll() {
+            let stepY = state.stepYPerTick
+            guard stepY != 0,
+                  let scrollView = self.enclosingScrollView,
+                  let docView = scrollView.documentView else {
+                return
+            }
+            let clipView = scrollView.contentView
+            let visible = clipView.documentVisibleRect
+            let maxOffsetY = max(0, docView.bounds.height - visible.height)
+            let currentY = clipView.bounds.origin.y
+            let targetY = min(max(0, currentY + stepY), maxOffsetY)
+            guard abs(targetY - currentY) > 0.01 else { return }
+
+            clipView.scroll(to: NSPoint(x: clipView.bounds.origin.x, y: targetY))
+            scrollView.reflectScrolledClipView(clipView)
+            if stepY < 0 {
+                onUserScrollUp?(targetY)
+            }
         }
     }
 }
