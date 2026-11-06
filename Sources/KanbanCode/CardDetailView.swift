@@ -517,6 +517,13 @@ struct CardDetailView: View {
             guard selectedBrowserTabId == nil else { return }
             showRenameSheet = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeSwitchToTerminal)) { note in
+            let targetCardId = note.object as? String
+            if targetCardId == nil || targetCardId == card.id {
+                preferChatView = false
+                terminalGrabFocus = true
+            }
+        }
         .sheet(item: $queuedPromptItem) { item in
             QueuedPromptDialog(
                 isPresented: Binding(
