@@ -2,6 +2,7 @@ import Testing
 import Foundation
 import AppKit
 import SwiftTerm
+@testable import KanbanCode
 
 private final class SentRecorder: TerminalViewDelegate {
     var sent: [UInt8] = []
@@ -66,6 +67,18 @@ struct TerminalMouseWheelTests {
         view.scrollWheel(with: wheel(lines: 3))
         #expect(recorder.sent.isEmpty)
     }
+
+    @Test("sendWheel forwards wheel reports to a mouse-tracking tmux TUI while keeping allowMouseReporting false for selection")
+    func sendWheelForwardsWhenClickReportingDisabled() {
+        let (view, recorder) = view(feeding: Self.rushStart)
+        view.allowMouseReporting = false
+        #expect(view.getTerminal().mouseMode != .off)
+        view.sendWheel(with: wheel(lines: 3))
+        #expect(recorder.text.components(separatedBy: "\u{1b}[<64;").count - 1 == 3)
+        recorder.sent = []
+        view.sendWheel(with: wheel(lines: -2))
+        #expect(recorder.text.components(separatedBy: "\u{1b}[<65;").count - 1 == 2)
+    }
 }
 
 @Suite("Terminal mouse motion")
@@ -91,5 +104,56 @@ struct TerminalMouseMotionTests {
         recorder.sent = []
         terminal.sendEvent(buttonFlags: hover, x: 4, y: 2)
         #expect(String(decoding: recorder.sent, as: UTF8.self) == "\u{1b}[<0;5;3m")
+    }
+}
+
+@Suite("BatchedTerminalView interactive TUI")
+@MainActor
+struct BatchedTerminalViewInteractiveTests {
+    private static let altScreenStart = "\u{1b}[?1049h"
+    private static let mouseTrackingStart = "\u{1b}[?1000h"
+
+    @Test("Normal terminal view drops frames when not lossless or in passthrough")
+    func normalTerminalDropsFrames() {
+        let view = BatchedTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        #expect(!view.isInteractiveTUI)
+        #expect(view.dropsFrames)
+    }
+
+    @Test("Alternate screen terminal does not drop frames")
+    func alternateScreenTerminalDoesNotDropFrames() {
+        let view = BatchedTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        view.feed(text: Self.altScreenStart)
+        #expect(view.isInteractiveTUI)
+        #expect(!view.dropsFrames)
+    }
+
+    @Test("Mouse tracking terminal does not drop frames")
+    func mouseTrackingTerminalDoesNotDropFrames() {
+        let view = BatchedTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        view.feed(text: Self.mouseTrackingStart)
+        #expect(view.isInteractiveTUI)
+        #expect(!view.dropsFrames)
+    }
+
+    @Test("Interactive TUI terminal processes large payload without dropping bytes")
+    func interactiveTUIProcessesWithoutDropping() async {
+        let view = BatchedTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        view.feed(text: Self.altScreenStart)
+
+        // Generate 48KB of data (exceeding 32KB keepBytes threshold)
+        var lines: [String] = []
+        for i in 0..<1000 {
+            lines.append("line \(i): test terminal data stream\n")
+        }
+        let payload = lines.joined()
+        let data = Array(payload.utf8)
+
+        view.dataReceived(slice: data[...])
+
+        // Allow batch delay / async processing to complete
+        try? await Task.sleep(for: .milliseconds(50))
+
+        #expect(!view.dropsFrames)
     }
 }
