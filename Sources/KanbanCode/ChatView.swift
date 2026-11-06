@@ -64,6 +64,9 @@ struct ChatView: View {
     /// A message of the chat a catch-up link asked to show.
     @State private var jumpRequest: ChatJumpRequest?
     @State private var sideChatCollapsed = false
+    /// A question or plan Claude waits on that the transcript does not show
+    /// yet (Claude Code writes it only once answered).
+    @State private var hookPrompt: HookPendingPrompt?
 
     /// The card's side chat (`/btw`, `/catchup`): Claude Code sessions only.
     private var sideChat: SideChatController? {
@@ -82,6 +85,91 @@ struct ChatView: View {
         pendingMessageTime = .now
         userTurnCountAtSend = turns.filter { $0.role == "user" }.count
         onSendPrompt(text, images)
+    }
+
+    /// Answers the question or plan the session waits on: through its
+    /// attention request when there is one (a question's option becomes its
+    /// number key), as a typed message otherwise.
+    private func sendAnswer(_ answer: String) {
+        let cardId = cardId
+        let tmuxSession = tmuxSessionName
+        Task { @MainActor in
+            PendingQuestionDraftStore.shared.clear(for: cardId)
+            if let structured = StructuredQuestionAnswer.decode(from: answer), let session = tmuxSession {
+                // Structured question: execute keystrokes directly into tmux session
+                await Self.sendStructuredKeys(structured.keys, to: session)
+                if let answerCard = AppServices.answerCard {
+                    _ = await answerCard(cardId, answer)
+                }
+                return
+            }
+
+            // Plain text answer: resolve via attention request, or send as prompt
+            if let answerCard = AppServices.answerCard, await answerCard(cardId, answer) { return }
+            onSendPrompt(answer, [])
+        }
+    }
+
+    private func chatAboutThis(prompt: HookPendingPrompt) {
+        PendingQuestionDraftStore.shared.clear(for: cardId)
+        let driver = AssistantPromptDrivers.driver(for: assistant)
+        if let session = tmuxSessionName {
+            switch prompt.content {
+            case .question(let qs):
+                if let keys = driver.chatAboutThisKeys(questions: qs) {
+                    Task {
+                        await Self.sendStructuredKeys(keys, to: session)
+                    }
+                } else {
+                    Task {
+                        if let adapter = try? AppServices.tmux.adapter(for: session) {
+                            _ = try? await adapter.run(["send-keys", "-t", session, "Escape"])
+                        }
+                    }
+                }
+            case .plan:
+                Task {
+                    if let adapter = try? AppServices.tmux.adapter(for: session) {
+                        _ = try? await adapter.run(["send-keys", "-t", session, "Escape"])
+                    }
+                }
+            }
+        }
+        if let sessionId = prompt.sessionId as String? {
+            HookPendingPromptStore.remove(sessionId: sessionId, ifWrittenBefore: Date().addingTimeInterval(60))
+        }
+        hookPrompt = nil
+        NotificationCenter.default.post(name: .kanbanCodeSwitchToTerminal, object: cardId)
+    }
+
+    static func sendStructuredKeys(_ keys: [String], to session: String) async {
+        guard let adapter = try? AppServices.tmux.adapter(for: session) else { return }
+        for (i, key) in keys.enumerated() {
+            if i > 0 {
+                try? await Task.sleep(for: .milliseconds(80))
+            }
+            _ = try? await adapter.run(["send-keys", "-t", session, "--", key])
+        }
+    }
+
+    /// Re-reads the copy of a pending question the permission hook left
+    /// while the transcript cannot show it, until the session goes.
+    private func pollHookPrompt() async {
+        guard assistant == .claude, let sessionId,
+              let session = tmuxSessionName, !RushSessionName.isRush(session)
+        else {
+            hookPrompt = nil
+            return
+        }
+        let path = sessionPath
+        while !Task.isCancelled {
+            let found = await Task.detached(priority: .utility) {
+                HookPendingPromptStore.pending(sessionId: sessionId, transcriptPath: path)
+            }.value
+            if Task.isCancelled { break }
+            if found != hookPrompt { hookPrompt = found }
+            try? await Task.sleep(for: .milliseconds(1500))
+        }
     }
 
     private func clearPendingIfMatched() {
@@ -150,13 +238,7 @@ struct ChatView: View {
                     githubBaseURL: githubBaseURL,
                     jumpRequest: jumpRequest,
                     topInset: sideChat?.state.isOpen == true ? SideChatPanel.foldedHeight : 0,
-                    onSendAnswer: { answer in
-                        let cardId = cardId
-                        Task { @MainActor in
-                            if let answerCard = AppServices.answerCard, await answerCard(cardId, answer) { return }
-                            onSendPrompt(answer, [])
-                        }
-                    },
+                    onSendAnswer: { answer in sendAnswer(answer) },
                     onContinueInConversation: cardId.isEmpty ? nil : { [cardId] text in
                         ConversationActions.start(cardId: cardId, quote: text)
                     },
@@ -166,40 +248,7 @@ struct ChatView: View {
                 )
 
                 // Working indicator — left-aligned pill, same bg as page
-                if isAssistantBusy {
-                    HStack {
-                        Spacer(minLength: 0)
-                        HStack(spacing: 8) {
-                            ProgressView().controlSize(.small)
-                            Text("\(assistant.displayName) is working...")
-                                .font(.app(.callout))
-                                .foregroundStyle(.secondary)
-                            Button {
-                                dismissedBusy = true
-                                if let session = tmuxSessionName {
-                                    Task {
-                                        try? await AppServices.tmux.sendInterrupt(sessionName: session)
-                                    }
-                                }
-                            } label: {
-                                Image(systemName: "stop.fill")
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 20, height: 20)
-                                    .background(Color.primary.opacity(0.06), in: Circle())
-                            }
-                            .buttonStyle(.plain)
-                            .help("Stop (Ctrl+C)")
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(Color(.windowBackgroundColor), in: Capsule())
-                        .frame(maxWidth: chatMaxWidth + 40, alignment: .leading)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 2)
-                }
+                busyIndicatorView
             }
             // Only the panel animates, inside its overlay: the chat's top
             // inset changes in one step, so its layout never follows an
@@ -222,6 +271,16 @@ struct ChatView: View {
                 }
                 .animation(.easeInOut(duration: 0.18), value: sideChat?.state.isOpen)
             }
+            }
+
+            if let hookPrompt {
+                HookPendingPromptPanel(
+                    prompt: hookPrompt,
+                    cardId: cardId,
+                    tmuxSessionName: tmuxSessionName,
+                    onAnswer: { answer in sendAnswer(answer) },
+                    onChatAboutThis: { chatAboutThis(prompt: hookPrompt) }
+                )
             }
 
             if tmuxSessionName != nil {
@@ -266,6 +325,9 @@ struct ChatView: View {
         }
         .onAppear {
             clearPendingIfMatched()
+        }
+        .task(id: "\(sessionId ?? "")|\(tmuxSessionName ?? "")") {
+            await pollHookPrompt()
         }
         .task(id: pendingMessageTime) {
             // The 30 second cap holds even when nothing else changes.
@@ -319,6 +381,43 @@ struct ChatView: View {
         })
     }
 
+    @ViewBuilder
+    private var busyIndicatorView: some View {
+        if isAssistantBusy && hookPrompt == nil {
+            HStack {
+                Spacer(minLength: 0)
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("\(assistant.displayName) is working...")
+                        .font(.app(.callout))
+                        .foregroundStyle(.secondary)
+                    Button {
+                        dismissedBusy = true
+                        if let session = tmuxSessionName {
+                            Task {
+                                try? await AppServices.tmux.sendInterrupt(sessionName: session)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 20, height: 20)
+                            .background(Color.primary.opacity(0.06), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Stop (Ctrl+C)")
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color(.windowBackgroundColor), in: Capsule())
+                .frame(maxWidth: chatMaxWidth + 40, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 2)
+        }
+    }
 }
 
 // MARK: - Chat Message List (isolated from input bar state)
