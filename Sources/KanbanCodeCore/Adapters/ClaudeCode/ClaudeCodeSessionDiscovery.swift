@@ -13,9 +13,7 @@ public final class ClaudeCodeSessionDiscovery: SessionDiscovery, @unchecked Send
 
     /// Cache: sessionId → parsed session (from all dirs combined)
     private var cachedSessions: [String: Session] = [:]
-    /// Per-directory mtime to skip unchanged directories entirely
-    private var dirMtimes: [String: Date] = [:]
-    /// Per-file mtime to skip unchanged .jsonl files within changed directories
+    /// Per-file mtime to skip unchanged .jsonl files within project directories
     private var fileMtimes: [String: Date] = [:]
     /// Track which sessions came from which directory for eviction
     private var dirSessionIds: [String: Set<String>] = [:]
@@ -34,7 +32,6 @@ public final class ClaudeCodeSessionDiscovery: SessionDiscovery, @unchecked Send
         headlessExclusion = exclusion
         // Rescan every directory: sessions a removed entry excluded come
         // back, and cached ones a new entry excludes go.
-        dirMtimes = [:]
         dirSkippedIds = [:]
         for (id, session) in cachedSessions where isExcludedHeadless(session) {
             cachedSessions.removeValue(forKey: id)
@@ -71,15 +68,6 @@ public final class ClaudeCodeSessionDiscovery: SessionDiscovery, @unchecked Send
             }
             seenDirs.insert(dirName)
 
-            // Check directory mtime — skip entirely if unchanged
-            let dirAttrs = try? fileManager.attributesOfItem(atPath: dirPath)
-            let dirMtime = dirAttrs?[.modificationDate] as? Date
-            if let cached = dirMtimes[dirName], dirMtime == cached {
-                continue // No files added/removed in this directory
-            }
-            dirMtimes[dirName] = dirMtime
-
-            // Directory changed — re-scan it
             var dirSessions: Set<String> = []
             var skipped = dirSkippedIds[dirName] ?? []
             let mayBeExcluded = headlessExclusion.mayMatchClaudeProjectDir(dirName)
@@ -187,8 +175,7 @@ public final class ClaudeCodeSessionDiscovery: SessionDiscovery, @unchecked Send
         }
 
         // Evict entire directories that were removed
-        for removedDir in Set(dirMtimes.keys).subtracting(seenDirs) {
-            dirMtimes.removeValue(forKey: removedDir)
+        for removedDir in Set(dirSessionIds.keys).subtracting(seenDirs) {
             dirSkippedIds.removeValue(forKey: removedDir)
             if let ids = dirSessionIds.removeValue(forKey: removedDir) {
                 let dirPath = (claudeDir as NSString).appendingPathComponent(removedDir)
