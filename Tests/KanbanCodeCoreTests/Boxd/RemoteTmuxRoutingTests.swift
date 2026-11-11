@@ -238,6 +238,54 @@ struct RoutingTmuxAdapterTests {
         #expect(router.isRemote("remote-card") == false)
     }
 
+    @Test("LaunchSession preserves assigned machine so createSession routes to remote")
+    func launchSessionPreservesMachine() async throws {
+        let (router, localTransport, registry) = makeRouter()
+        let remoteTransport = FakeTmuxTransport(label: "remote")
+        remoteTransport.script(["has-session", "-t", "remote-card"], failed)
+        registry.assign(sessionName: "remote-card", to: "kanban-repo-1")
+        registry.setMachine("kanban-repo-1", state: .connected, tmux: TmuxAdapter(transport: remoteTransport))
+
+        let launcher = LaunchSession(tmux: router)
+        _ = try await launcher.launch(
+            sessionName: "remote-card",
+            projectPath: "/home/boxd/repo",
+            prompt: "test prompt",
+            worktreeName: nil,
+            shellOverride: nil,
+            skipPermissions: true,
+            assistant: .claude
+        )
+
+        #expect(localTransport.calls.isEmpty)
+        #expect(remoteTransport.calls.contains { $0.contains("kill-session") && $0.contains("remote-card") })
+        #expect(remoteTransport.calls.contains { $0.contains("new-session") && $0.contains("remote-card") })
+        #expect(registry.machine(forSession: "remote-card") == "kanban-repo-1")
+    }
+
+    @Test("LaunchSession resume preserves assigned machine")
+    func resumeSessionPreservesMachine() async throws {
+        let (router, localTransport, registry) = makeRouter()
+        let remoteTransport = FakeTmuxTransport(label: "remote")
+        let sessionName = "claude-12345678"
+        remoteTransport.script(["has-session", "-t", sessionName], failed)
+        registry.assign(sessionName: sessionName, to: "kanban-repo-1")
+        registry.setMachine("kanban-repo-1", state: .connected, tmux: TmuxAdapter(transport: remoteTransport))
+
+        let launcher = LaunchSession(tmux: router)
+        _ = try await launcher.resume(
+            sessionId: "12345678-abcd-ef01-2345-6789abcdef01",
+            projectPath: "/home/boxd/repo",
+            shellOverride: nil,
+            skipPermissions: true,
+            assistant: .claude
+        )
+
+        #expect(!localTransport.calls.contains { $0.contains("new-session") })
+        #expect(remoteTransport.calls.contains { $0.contains("new-session") && $0.contains(sessionName) })
+        #expect(registry.machine(forSession: sessionName) == "kanban-repo-1")
+    }
+
     @Test("isAvailable only asks the local tmux")
     func isAvailableUsesLocal() async {
         let (router, localTransport, _) = makeRouter()
