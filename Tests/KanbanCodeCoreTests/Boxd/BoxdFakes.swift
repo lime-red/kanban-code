@@ -214,6 +214,16 @@ final class FakeBoxdPort: BoxdPort, @unchecked Sendable {
     private var _calls: [Call] = []
     private var _errors: [String: BoxdError] = [:]
     private var _machines: [String: BoxdMachine] = [:]
+    private var _hostProfiles: [String: RemoteHostProfile] = [:]
+
+    var hostProfiles: [String: RemoteHostProfile] {
+        get { withLock(lock) { _hostProfiles } }
+        set { withLock(lock) { _hostProfiles = newValue } }
+    }
+
+    func hostProfile(name: String) async -> RemoteHostProfile? {
+        withLock(lock) { _hostProfiles[name] }
+    }
 
     var calls: [Call] { withLock(lock) { _calls } }
 

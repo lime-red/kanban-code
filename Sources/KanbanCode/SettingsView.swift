@@ -1588,12 +1588,14 @@ struct ProjectsSettingsView: View {
     }
 
     private func addProjectViaFolderPicker() {
+        NSApp.activate(ignoringOtherApps: true)
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.message = "Select a project directory"
         panel.prompt = "Add Project"
+        panel.level = .modalPanel
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let path = url.path
