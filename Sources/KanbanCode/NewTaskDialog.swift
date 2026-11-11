@@ -244,6 +244,10 @@ struct NewTaskDialog: View {
             applyProjectDefaults()
             if !commandEdited { command = commandPreview }
         }
+        .onChange(of: customPath) {
+            applyProjectDefaults()
+            if !commandEdited { command = commandPreview }
+        }
         .onChange(of: dangerouslySkipPermissions) {
             if !commandEdited { command = commandPreview }
         }
@@ -305,7 +309,10 @@ struct NewTaskDialog: View {
 
     /// Reads the toggle defaults of the selected project.
     private func applyProjectDefaults() {
-        machineChoice = remoteOptions?.cardMachine.map { BoxdMachineChoice.existing($0) } ?? .newMachine
+        let fallbackMachine: BoxdMachineChoice = remoteMode == .ssh
+            ? (remoteOptions?.allMachines.first.map { BoxdMachineChoice.existing($0.name) } ?? .newMachine)
+            : .newMachine
+        machineChoice = remoteOptions?.cardMachine.map { BoxdMachineChoice.existing($0) } ?? fallbackMachine
         guard let path = resolvedProjectPath else { return }
         if let remoteOptions { machineChoice = remoteOptions.initialMachineChoice(projectPath: path) }
         runRemotely = remoteOptions?.cardMachine != nil
@@ -343,13 +350,13 @@ struct NewTaskDialog: View {
         let proj = resolvedProjectPath
         let titleOrNil = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : title.trimmingCharacters(in: .whitespacesAndNewlines)
         if let proj { lastSelectedProjectPath = proj }
-        if startImmediately {
-            if runsOnBoxd {
-                onMachineChoice(machineChoice)
-                if remoteOptions?.cardMachine == nil, let proj {
-                    RemoteLaunchOptions.rememberMachineChoice(machineChoice, projectPath: proj)
-                }
+        if runsOnBoxd {
+            onMachineChoice(machineChoice)
+            if remoteOptions?.cardMachine == nil, let proj {
+                RemoteLaunchOptions.rememberMachineChoice(machineChoice, projectPath: proj)
             }
+        }
+        if startImmediately {
             onCreateAndLaunch(
                 prompt,
                 proj,

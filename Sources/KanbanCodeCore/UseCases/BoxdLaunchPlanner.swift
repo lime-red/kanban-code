@@ -138,13 +138,19 @@ public enum BoxdLaunchPlanner {
     /// Where the repository lives on the machine.
     public static func remoteProjectPath(folderTemplate: String, repoName: String, remoteHome: String) -> String {
         let home = trimTrailingSlash(remoteHome)
+        if repoName == "~" || repoName.isEmpty { return home }
         var path = expand(template: folderTemplate, values: ["repo_name": repoName]).trimmingCharacters(in: .whitespaces)
         if path.isEmpty { path = repoName }
 
-        if path == "~" {
+        if path == "~" || path == "~/~" {
             path = home
         } else if path.hasPrefix("~/") {
-            path = home + String(path.dropFirst(1))
+            let sub = String(path.dropFirst(2))
+            if sub.isEmpty || sub == "~" {
+                path = home
+            } else {
+                path = home + "/" + sub
+            }
         } else if !path.hasPrefix("/") {
             path = home + "/" + path
         }
