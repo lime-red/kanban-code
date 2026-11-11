@@ -44,11 +44,27 @@ struct KanbanCodeCardTests {
 
     @Test("Relative time formats correctly")
     func relativeTime() {
-        #expect(KanbanCodeCard.formatRelativeTime(Date.now) == "just now")
-        #expect(KanbanCodeCard.formatRelativeTime(Date.now.addingTimeInterval(-120)) == "2m ago")
-        #expect(KanbanCodeCard.formatRelativeTime(Date.now.addingTimeInterval(-7200)) == "2h ago")
-        #expect(KanbanCodeCard.formatRelativeTime(Date.now.addingTimeInterval(-86400)) == "yesterday")
-        #expect(KanbanCodeCard.formatRelativeTime(Date.now.addingTimeInterval(-259200)) == "3d ago")
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(secondsFromGMT: 0)!
+
+        // Construct 2026-11-11 12:00:00 UTC
+        var comps = DateComponents(year: 2026, month: 11, day: 11, hour: 12, minute: 0, second: 0)
+        let now = cal.date(from: comps)!
+
+        #expect(KanbanCodeCard.formatRelativeTime(now, relativeTo: now, calendar: cal) == "just now")
+        #expect(KanbanCodeCard.formatRelativeTime(now.addingTimeInterval(-30), relativeTo: now, calendar: cal) == "just now")
+        #expect(KanbanCodeCard.formatRelativeTime(now.addingTimeInterval(-120), relativeTo: now, calendar: cal) == "2m ago")
+        #expect(KanbanCodeCard.formatRelativeTime(now.addingTimeInterval(-7200), relativeTo: now, calendar: cal) == "2h ago")
+        // Same day earlier (e.g. 10 hours ago at 02:00 AM on the same day) -> shows "10h ago"
+        #expect(KanbanCodeCard.formatRelativeTime(now.addingTimeInterval(-36000), relativeTo: now, calendar: cal) == "10h ago")
+        // Yesterday (e.g. 18 hours ago at 18:00 on the previous calendar day) -> shows "yesterday"
+        #expect(KanbanCodeCard.formatRelativeTime(now.addingTimeInterval(-64800), relativeTo: now, calendar: cal) == "yesterday")
+        // Exactly 24 hours ago (yesterday at 12:00) -> shows "yesterday"
+        #expect(KanbanCodeCard.formatRelativeTime(now.addingTimeInterval(-86400), relativeTo: now, calendar: cal) == "yesterday")
+        // 2 days ago (2026-11-09) -> shows "2d ago"
+        #expect(KanbanCodeCard.formatRelativeTime(now.addingTimeInterval(-172800), relativeTo: now, calendar: cal) == "2d ago")
+        // 3 days ago -> shows "3d ago"
+        #expect(KanbanCodeCard.formatRelativeTime(now.addingTimeInterval(-259200), relativeTo: now, calendar: cal) == "3d ago")
     }
 
     @Test("Column comes from link")
