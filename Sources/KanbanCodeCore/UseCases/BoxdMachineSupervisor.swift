@@ -418,7 +418,12 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             // it must not sit running with nothing on it. Its disk stays, so
             // a retry starts it again.
             log("Preparation failed, stopping \(machineName)")
-            await stop(machineName: machineName, reason: .sessionStopped)
+            let host = await isHost(machineName)
+            await abandonStart(
+                machineName: machineName, previousState: previousState, newSessionNames: newNames)
+            if !host {
+                await stop(machineName: machineName, reason: .sessionStopped)
+            }
             throw error
         }
         guard let bridge = machines[machineName]?.bridge else { throw BoxdSupervisorError.notConnected(machineName) }
@@ -445,7 +450,12 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             // A card with no session must not keep a running machine. The
             // machine keeps its disk, so a retry starts it again.
             log("Preparation failed, stopping \(machineName)")
-            await stop(machineName: machineName, reason: .sessionStopped)
+            let host = await isHost(machineName)
+            await abandonStart(
+                machineName: machineName, previousState: previousState, newSessionNames: newNames)
+            if !host {
+                await stop(machineName: machineName, reason: .sessionStopped)
+            }
             throw error
         }
     }
@@ -458,13 +468,25 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     /// sessions, local resumes included, would be refused.
     private func abandonStart(machineName: String, previousState: RemoteMachineState?, newSessionNames: [String]) async {
         guard machines[machineName]?.bridge == nil else { return }
+        for name in newSessionNames { registry.unassign(sessionName: name) }
+        let host = await isHost(machineName)
+        if host {
+            let revertState: RemoteMachineState
+            if let previousState, previousState != .connecting {
+                revertState = previousState
+            } else {
+                revertState = .unreachable
+            }
+            registry.disconnectMachine(machineName, state: revertState)
+            await report(machineName, state: revertState)
+            return
+        }
         guard let previousState, previousState != .connecting else {
             machines[machineName] = nil
             await report(machineName, state: .destroyed)
             registry.removeMachine(machineName)
             return
         }
-        for name in newSessionNames { registry.unassign(sessionName: name) }
         await report(machineName, state: previousState)
     }
 

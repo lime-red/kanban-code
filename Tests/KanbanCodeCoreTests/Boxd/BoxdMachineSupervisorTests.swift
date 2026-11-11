@@ -135,6 +135,41 @@ struct BoxdMachineSupervisorTests {
         #expect(registry.machine(forSession: "claude-bbbbbbbb") == nil)
     }
 
+    @Test("A failed connect on an ssh machine leaves it unreachable and unassigns sessions")
+    func failedConnectOnSshMachineCleansUp() async {
+        let boxd = FakeBoxdPort()
+        boxd.setMachine(BoxdMachine(name: "bio", status: .running))
+        boxd.hostProfiles["bio"] = RemoteHostProfile(remoteHome: "/home/user", folderTemplate: "~/${repo_name}", nodePath: "node")
+        let registry = RemoteSessionRegistry()
+        let settings = BoxdSettings(sshMachines: [SshMachine(name: "bio", target: "user@host")])
+        let home = NSTemporaryDirectory() + "boxd-supervisor-\(UUID().uuidString)"
+        let supervisor = BoxdMachineSupervisor(
+            boxd: boxd,
+            registry: registry,
+            settingsProvider: { settings },
+            cliBundlePath: nil,
+            appVersion: "1.0.0-test",
+            localHome: home,
+            localKanbanHome: home + "/.kanban-code",
+            now: { Date(timeIntervalSince1970: 1_700_000_000) }
+        )
+        let recorder = ActionRecorder()
+        await supervisor.setDispatch { @MainActor action in recorder.append(action) }
+
+        await #expect(throws: (any Error).self) {
+            _ = try await supervisor.prepare(
+                cardId: "card_1", localProjectPath: "/tmp/repo", existingMachine: "bio",
+                worktreeName: nil, existingWorktree: nil, sessionNames: ["claude-test1234"])
+        }
+
+        // Sessions should be unassigned
+        #expect(registry.machine(forSession: "claude-test1234") == nil)
+        // Machine state should not be stuck at .connecting
+        #expect(registry.state(of: "bio") == .unreachable)
+        // Router should route the unassigned session locally and not throw "Machine bio is connecting"
+        #expect(throws: Never.self) { _ = try RoutingTmuxAdapter(registry: registry).adapter(for: "claude-test1234") }
+    }
+
     @Test("The toast of a failed boxd command says why, without the command line")
     func outOfCreditsMessage() {
         #expect(BoxdCliAdapter.shortMessage(of: Self.outOfCredits)
