@@ -151,8 +151,17 @@ public final class SshHostPort: BoxdPort, @unchecked Sendable {
     }
 
     /// Script of the reachability check: prints the home directory and the
-    /// path of node, one per line.
-    static let probeScript = "printf '%s\\n%s\\n' \"$HOME\" \"$(command -v node || echo node)\""
+    /// path of node, one per line. Discovers node even in non-interactive shells
+    /// where nvm, fnm, asdf, mise, volta or custom paths might not be in PATH.
+    static let probeScript = """
+    _find_node() { \
+    if command -v node >/dev/null 2>&1; then command -v node; return 0; fi; \
+    if [ -s "$HOME/.nvm/nvm.sh" ]; then export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh" >/dev/null 2>&1; if command -v node >/dev/null 2>&1; then command -v node; return 0; fi; fi; \
+    for p in $(ls -d "$HOME"/.nvm/versions/node/*/bin/node 2>/dev/null | tail -n 1) "$HOME/.fnm/current/bin/node" "$HOME/.local/share/fnm/current/bin/node" "$HOME/.asdf/shims/node" $(ls -d "$HOME"/.local/share/mise/installs/node/*/bin/node 2>/dev/null | tail -n 1) "$HOME/.volta/bin/node" "$HOME/.local/bin/node" /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do \
+    if [ -n "$p" ] && [ -x "$p" ]; then echo "$p"; return 0; fi; done; \
+    echo node; \
+    }; printf '%s\\n%s\\n' "$HOME" "$(_find_node)"
+    """
 
     static func parseProbe(_ output: String) -> Probe? {
         let lines = output.split(separator: "\n", omittingEmptySubsequences: false).map {
