@@ -190,6 +190,7 @@ public final class MasterEngine {
                 if runRemotely, remoteMode.runsOnMachines, let boxdSupervisor {
                     let existingMachine = machineChoice?.machineName
                         ?? (machineChoice == nil ? cardLink?.remote?.machineName : nil)
+                        ?? (remoteMode == .ssh ? settings?.boxd?.sshMachines.first(where: \.isComplete)?.name : nil)
                     progress.start()
                     let preparation = try await boxdSupervisor.prepare(
                         cardId: cardId,
@@ -772,6 +773,7 @@ public final class MasterEngine {
                     let currentMachine = card.link.remote?.machineName
                     let existingMachine = machineChoice?.machineName
                         ?? (machineChoice == nil ? currentMachine : nil)
+                        ?? (remoteMode == .ssh ? settings?.boxd?.sshMachines.first(where: \.isComplete)?.name : nil)
                     progress.start()
                     // A card that moves from this Mac to a machine ends its
                     // local session first, so the conversation never runs in

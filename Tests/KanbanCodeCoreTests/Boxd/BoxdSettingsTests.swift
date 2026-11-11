@@ -44,6 +44,9 @@ struct BoxdSettingsTests {
     func legacyInitCommandUpgraded() throws {
         let json = #"{"boxd": {"initCommand": "if [ -d \"${repo_dir}\" ]; then\n  cd \"${repo_dir}\" && git pull --ff-only\nelse\n  git clone \"${repo_url}\" \"${repo_dir}\" && cd \"${repo_dir}\"\nfi"}}"#
         #expect(try decode(json).boxd?.initCommand == BoxdSettings.defaultInitCommand)
+
+        let prevDefault = #"{"boxd": {"initCommand": "if [ -d \"${repo_dir}\" ]; then\n  cd \"${repo_dir}\" || exit 1\n  git pull --ff-only || {\n    git stash push --include-untracked --message \"kanban-code init $(date -u +%Y-%m-%dT%H:%M:%SZ)\" || exit 1\n    git pull --ff-only\n  }\nelse\n  git clone \"${repo_url}\" \"${repo_dir}\"\nfi"}}"#
+        #expect(try decode(prevDefault).boxd?.initCommand == BoxdSettings.defaultInitCommand)
     }
 
     @Test("An edited init command is kept as it is")
