@@ -252,12 +252,18 @@ public struct BoxdSettings: Codable, Sendable, Equatable {
     public static let defaultInitCommand = """
     if [ -d "${repo_dir}" ]; then
       cd "${repo_dir}" || exit 1
-      git pull --ff-only || {
-        git stash push --include-untracked --message "kanban-code init $(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 1
-        git pull --ff-only
-      }
+      if [ -n "${repo_url}" ] && [ -d .git ]; then
+        git pull --ff-only || {
+          git stash push --include-untracked --message "kanban-code init $(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 1
+          git pull --ff-only
+        }
+      fi
     else
-      git clone "${repo_url}" "${repo_dir}"
+      if [ -n "${repo_url}" ]; then
+        git clone "${repo_url}" "${repo_dir}"
+      else
+        mkdir -p "${repo_dir}"
+      fi
     fi
     """
 
@@ -270,6 +276,17 @@ public struct BoxdSettings: Codable, Sendable, Equatable {
           cd "${repo_dir}" && git pull --ff-only
         else
           git clone "${repo_url}" "${repo_dir}" && cd "${repo_dir}"
+        fi
+        """,
+        """
+        if [ -d "${repo_dir}" ]; then
+          cd "${repo_dir}" || exit 1
+          git pull --ff-only || {
+            git stash push --include-untracked --message "kanban-code init $(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 1
+            git pull --ff-only
+          }
+        else
+          git clone "${repo_url}" "${repo_dir}"
         fi
         """
     ]

@@ -380,7 +380,14 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         let repoRoot = Self.repositoryRoot(of: localProjectPath)
         let originURL = await Self.originURL(of: repoRoot)
         let repoName = BoxdLaunchPlanner.repoName(fromOriginURL: originURL, fallbackFolder: (repoRoot as NSString).lastPathComponent)
-        let machineName = existingMachine ?? BoxdLaunchPlanner.machineName(repoName: repoName, cardId: cardId)
+        let machineName: String
+        if let existingMachine {
+            machineName = existingMachine
+        } else if let defaultHost = settings.sshMachines.first(where: \.isComplete)?.name {
+            machineName = defaultHost
+        } else {
+            machineName = BoxdLaunchPlanner.machineName(repoName: repoName, cardId: cardId)
+        }
         let host = await boxd.hostProfile(name: machineName)
         let remoteHome = machines[machineName]?.remoteHome ?? host?.remoteHome ?? Self.defaultRemoteHome
         let remoteProjectPath = BoxdLaunchPlanner.remoteProjectPath(
@@ -1132,6 +1139,9 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         if await isHost(machineName) {
             log("Reaching \(machineName) over ssh")
             return try await boxd.getMachine(name: machineName)
+        }
+        guard await boxd.isAvailable() else {
+            throw BoxdSupervisorError.initFailed("Machine '\(machineName)' is not an SSH machine, and the boxd CLI is not installed.")
         }
         var machine: BoxdMachine
         do {
@@ -2000,6 +2010,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
 
     /// The repository root of a path, walking up out of a worktree.
     public nonisolated static func repositoryRoot(of path: String) -> String {
+        if path == "~" { return "~" }
         if let range = path.range(of: "/.claude/worktrees/") {
             return String(path[..<range.lowerBound])
         }

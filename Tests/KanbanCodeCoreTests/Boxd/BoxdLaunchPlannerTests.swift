@@ -111,6 +111,18 @@ struct BoxdLaunchPlannerTests {
         )
     }
 
+    @Test("A project path or repository name of ~ resolves directly to the home directory")
+    func remoteProjectPathHome() {
+        #expect(
+            BoxdLaunchPlanner.remoteProjectPath(folderTemplate: "~/${repo_name}", repoName: "~", remoteHome: "/home/lime")
+                == "/home/lime"
+        )
+        #expect(
+            BoxdLaunchPlanner.remoteProjectPath(folderTemplate: "~/${repo_name}", repoName: "", remoteHome: "/home/lime")
+                == "/home/lime"
+        )
+    }
+
     @Test("The default init command is filled in with the card values")
     func initScript() {
         let script = BoxdLaunchPlanner.initScript(
@@ -124,6 +136,19 @@ struct BoxdLaunchPlannerTests {
         #expect(script.contains("git pull --ff-only"))
         #expect(script.contains(#"git clone "git@github.com:langwatch/langwatch.git" "/home/boxd/langwatch""#))
         #expect(!script.contains("${"))
+    }
+
+    @Test("An empty repoURL expands the script with a directory creation fallback")
+    func initScriptEmptyURL() {
+        let script = BoxdLaunchPlanner.initScript(
+            template: BoxdSettings.defaultInitCommand,
+            repoDir: "/home/lime",
+            repoURL: "",
+            repoName: "~",
+            branch: "main"
+        )
+        #expect(script.contains(#"mkdir -p "/home/lime""#))
+        #expect(script.contains(#"if [ -n "" ]"#))
     }
 
     @Test("The branch is available to a custom init command")
