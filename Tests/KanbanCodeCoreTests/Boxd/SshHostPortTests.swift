@@ -126,6 +126,14 @@ struct SshHostPortTests {
 
         let partial = try JSONDecoder().decode(SshMachine.self, from: Data(#"{"name":"box","target":"root@h"}"#.utf8))
         #expect(partial.repoRoot == SshMachine.defaultRepoRoot)
+        #expect(!partial.id.uuidString.isEmpty)
+
+        // Changing name preserves the stable id
+        var mutableMachine = partial
+        let originalId = mutableMachine.id
+        mutableMachine.name = "renamed-box"
+        #expect(mutableMachine.id == originalId)
+        #expect(mutableMachine.name == "renamed-box")
     }
 
     // MARK: - Commands
