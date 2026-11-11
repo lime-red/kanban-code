@@ -142,6 +142,7 @@ struct SshHostPortTests {
     func parseProbe() {
         #expect(SshHostPort.parseProbe("/root\n/usr/bin/node\n") == SshHostPort.Probe(home: "/root", nodePath: "/usr/bin/node"))
         #expect(SshHostPort.parseProbe("/home/dev\n\n") == SshHostPort.Probe(home: "/home/dev", nodePath: "node"))
+        #expect(SshHostPort.parseProbe("/home/lime\n/home/lime/.nvm/versions/node/v26.13.0/bin/node\n") == SshHostPort.Probe(home: "/home/lime", nodePath: "/home/lime/.nvm/versions/node/v26.13.0/bin/node"))
         #expect(SshHostPort.parseProbe("Welcome!\n") == nil)
     }
 
