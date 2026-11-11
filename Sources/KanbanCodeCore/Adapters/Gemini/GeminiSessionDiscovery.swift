@@ -8,8 +8,6 @@ public final class GeminiSessionDiscovery: SessionDiscovery, @unchecked Sendable
 
     /// Cache: sessionId → parsed session
     private var cachedSessions: [String: Session] = [:]
-    /// Per-chats-directory mtime to skip unchanged slug dirs
-    private var dirMtimes: [String: Date] = [:]
     /// Per-file mtime to skip unchanged session files
     private var fileMtimes: [String: Date] = [:]
     /// Track which sessions came from which slug for eviction
@@ -51,14 +49,6 @@ public final class GeminiSessionDiscovery: SessionDiscovery, @unchecked Sendable
                 continue
             }
             seenSlugs.insert(slug)
-
-            // Check directory mtime — skip if unchanged
-            let dirAttrs = try? fileManager.attributesOfItem(atPath: chatsDir)
-            let dirMtime = dirAttrs?[.modificationDate] as? Date
-            if let cached = dirMtimes[slug], dirMtime == cached {
-                continue
-            }
-            dirMtimes[slug] = dirMtime
 
             let projectPath = resolveProjectPath(slug: slug, slugToPath: slugToPath)
 
@@ -129,8 +119,7 @@ public final class GeminiSessionDiscovery: SessionDiscovery, @unchecked Sendable
         }
 
         // Evict slugs that were removed
-        for removedSlug in Set(dirMtimes.keys).subtracting(seenSlugs) {
-            dirMtimes.removeValue(forKey: removedSlug)
+        for removedSlug in Set(slugSessionIds.keys).subtracting(seenSlugs) {
             if let ids = slugSessionIds.removeValue(forKey: removedSlug) {
                 for id in ids { cachedSessions.removeValue(forKey: id) }
             }
