@@ -159,4 +159,42 @@ struct SessionDiscoveryTests {
             #expect(second.map(\.jsonlPath) == [to])
         }
     }
+
+    @Test("Detects modified session transcript even when directory modification time is unchanged")
+    func modifiedSessionDetectedEvenIfDirectoryMtimeUnchanged() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        let projectDir = (dir as NSString).appendingPathComponent("-Users-test-mod")
+        try FileManager.default.createDirectory(atPath: projectDir, withIntermediateDirectories: true)
+
+        let jsonlPath = (projectDir as NSString).appendingPathComponent("session-mod.jsonl")
+        try #"{"type":"user","sessionId":"session-mod","message":{"content":"Hello"},"cwd":"/test"}"#
+            .write(toFile: jsonlPath, atomically: true, encoding: .utf8)
+
+        let discovery = ClaudeCodeSessionDiscovery(claudeDir: dir)
+        let first = try await discovery.discoverSessions()
+        #expect(first.count == 1)
+        #expect(first[0].messageCount == 1)
+        let firstTime = first[0].modifiedTime
+
+        // Sleep to ensure a newer timestamp
+        try await Task.sleep(for: .milliseconds(150))
+
+        // Append a new assistant message to the existing file
+        let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: jsonlPath))
+        try handle.seekToEnd()
+        let newLine = "\n" + #"{"type":"assistant","sessionId":"session-mod","message":{"content":[{"type":"text","text":"Done"}]}}"#
+        try handle.write(contentsOf: Data(newLine.utf8))
+        try handle.close()
+
+        // Explicitly set directory mtime to a past timestamp so directory mtime did not change with the append
+        let pastDate = Date(timeIntervalSince1970: 100000)
+        try FileManager.default.setAttributes([.modificationDate: pastDate], ofItemAtPath: projectDir)
+
+        let second = try await discovery.discoverSessions()
+        #expect(second.count == 1)
+        #expect(second[0].messageCount == 2)
+        #expect(second[0].modifiedTime > firstTime)
+    }
 }

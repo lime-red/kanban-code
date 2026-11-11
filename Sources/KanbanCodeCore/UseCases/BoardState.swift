@@ -119,13 +119,19 @@ public struct KanbanCodeCard: Identifiable, Sendable, Equatable {
     /// The column this card is in.
     public var column: KanbanCodeColumn { link.column }
 
-    static func formatRelativeTime(_ date: Date) -> String {
-        let interval = Date.now.timeIntervalSince(date)
+    public static func formatRelativeTime(_ date: Date, relativeTo now: Date = .now, calendar: Calendar = .current) -> String {
+        let interval = now.timeIntervalSince(date)
+        if interval < 0 { return "just now" }
         if interval < 60 { return "just now" }
         if interval < 3600 { return "\(Int(interval / 60))m ago" }
-        if interval < 86400 { return "\(Int(interval / 3600))h ago" }
-        let days = Int(interval / 86400)
-        if days == 1 { return "yesterday" }
+        if calendar.isDate(date, inSameDayAs: now) {
+            return "\(max(1, Int(interval / 3600)))h ago"
+        }
+        if calendar.isDateInYesterday(date) {
+            return "yesterday"
+        }
+        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: now)).day ?? Int(interval / 86400)
+        if days <= 1 { return "yesterday" }
         if days < 30 { return "\(days)d ago" }
         return "\(days / 30)mo ago"
     }
