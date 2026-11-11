@@ -59,7 +59,14 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
 
         // Kill any stale session with the same name before launching.
         // This handles disconnected cards where the old tmux session lingers.
+        // RoutingTmuxAdapter unassigns the machine on killSession, so preserve
+        // any pre-assigned machine so createSession routes to the machine.
+        let router = tmux as? RoutingTmuxAdapter
+        let assignedMachine = router?.registry.machine(forSession: sessionName)
         try? await tmux.killSession(name: sessionName)
+        if let assignedMachine {
+            router?.registry.assign(sessionName: sessionName, to: assignedMachine)
+        }
 
         try await tmux.createSession(name: sessionName, path: projectPath, command: fullCmd,
                                      environment: Self.sessionEnvironment(extraEnv))
@@ -79,14 +86,20 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
         service: APIService? = nil,
         modelOverride: String? = nil
     ) async throws -> String {
-        // Kill stale tmux session if one exists — we always want a fresh resume
+        // Create new tmux session with resume command
+        let sessionName = "\(assistant.cliCommand)-\(String(sessionId.prefix(8)))"
+
+        // Kill stale tmux session if one exists — we always want a fresh resume.
+        // Preserve any machine pre-assigned to sessionName across the kill.
+        let router = tmux as? RoutingTmuxAdapter
+        let assignedMachine = router?.registry.machine(forSession: sessionName)
         let existing = try await tmux.listSessions()
         if let match = existing.first(where: { $0.name.contains(String(sessionId.prefix(8))) }) {
             try? await tmux.killSession(name: match.name)
         }
-
-        // Create new tmux session with resume command
-        let sessionName = "\(assistant.cliCommand)-\(String(sessionId.prefix(8)))"
+        if let assignedMachine {
+            router?.registry.assign(sessionName: sessionName, to: assignedMachine)
+        }
         let cmd: String
         if let commandOverride, !commandOverride.isEmpty {
             cmd = commandOverride

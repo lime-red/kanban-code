@@ -353,6 +353,7 @@ public final class MasterEngine {
                 )
                 KanbanCodeLog.info("launch", "Tmux session created: \(tmuxName)")
                 if let preparation = boxdPreparation, let boxdSupervisor {
+                    await boxdSupervisor.assignSession(tmuxName, to: preparation.machineName)
                     await boxdSupervisor.exportSessionEnvironment(
                         machineName: preparation.machineName, sessionName: tmuxName, env: preparation.extraEnv)
                     platform.markRemoteSessionReady(tmuxName, preparation.machineName)
@@ -828,6 +829,7 @@ public final class MasterEngine {
                         // newer transcript wins and a fresh --resume starts.
                         KanbanCodeLog.info("resume", "Dropping stale remote tmux \(resumeSessionName) on \(preparation.machineName)")
                         try? await tmux.killSession(name: resumeSessionName)
+                        await boxdSupervisor.assignSession(resumeSessionName, to: preparation.machineName)
                     }
                     if let localTranscript = store.state.links[cardId]?.sessionLink?.sessionPath,
                        FileManager.default.fileExists(atPath: localTranscript) {
@@ -979,6 +981,7 @@ public final class MasterEngine {
                 )
                 KanbanCodeLog.info("resume", "Resume launched for card=\(cardId.prefix(12)) actualTmux=\(actualTmuxName)")
                 if let preparation = boxdPreparation, let boxdSupervisor {
+                    await boxdSupervisor.assignSession(actualTmuxName, to: preparation.machineName)
                     await boxdSupervisor.exportSessionEnvironment(
                         machineName: preparation.machineName, sessionName: actualTmuxName, env: preparation.extraEnv)
                     platform.markRemoteSessionReady(actualTmuxName, preparation.machineName)
