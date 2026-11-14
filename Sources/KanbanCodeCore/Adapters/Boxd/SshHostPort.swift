@@ -25,22 +25,26 @@ public struct SshMachine: Codable, Sendable, Equatable, Hashable, Identifiable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = (try? c.decodeIfPresent(UUID.self, forKey: .id)) ?? UUID()
+        id = UUID()
         name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? ""
         target = (try? c.decodeIfPresent(String.self, forKey: .target)) ?? ""
         repoRoot = (try? c.decodeIfPresent(String.self, forKey: .repoRoot)) ?? Self.defaultRepoRoot
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, target, repoRoot
+        case name, target, repoRoot
     }
 
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(id, forKey: .id)
-        try c.encode(name, forKey: .name)
-        try c.encode(target, forKey: .target)
-        try c.encode(repoRoot, forKey: .repoRoot)
+    // `id` is runtime SwiftUI identity only; value equality, hashing, and
+    // persisted JSON depend strictly on the machine's configuration fields.
+    public static func == (lhs: SshMachine, rhs: SshMachine) -> Bool {
+        lhs.name == rhs.name && lhs.target == rhs.target && lhs.repoRoot == rhs.repoRoot
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(name)
+        hasher.combine(target)
+        hasher.combine(repoRoot)
     }
 
     /// Folder template of the checkouts, in the syntax of `BoxdSettings`.
