@@ -9,6 +9,12 @@ pub fn assign_column(
     activity: Option<&ActivityState>,
     has_worktree: bool,
 ) -> String {
+    // Manual On Hold override is unconditionally sticky: the user explicitly
+    // paused this card until they choose to resume, start, or move it.
+    if link.manual_overrides.column && link.column == "on_hold" {
+        return "on_hold".to_string();
+    }
+
     let has_pr = !link.pr_links.is_empty();
     let all_prs_done = !link.pr_links.is_empty()
         && link
@@ -107,5 +113,72 @@ pub fn update_card_column(link: &mut Link, activity: Option<&ActivityState>, has
     if new_col != link.column {
         link.column = new_col;
         link.updated_at = chrono::Utc::now();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::coordination_store::{ManualOverrides, PrLink};
+    use chrono::Utc;
+
+    fn sample_link(column: &str, override_column: bool) -> Link {
+        let now = Utc::now();
+        Link {
+            id: "card-1".into(),
+            name: Some("Test".into()),
+            project_path: None,
+            column: column.into(),
+            created_at: now,
+            updated_at: now,
+            last_activity: None,
+            manual_overrides: ManualOverrides {
+                column: override_column,
+                ..Default::default()
+            },
+            manually_archived: false,
+            on_hold_until: None,
+            on_hold_notified_at: None,
+            source: "manual".into(),
+            prompt_body: None,
+            prompt_image_paths: None,
+            session_link: None,
+            worktree_link: None,
+            pr_links: vec![],
+            issue_link: None,
+            discovered_branches: None,
+            is_remote: false,
+            is_launching: None,
+            queued_prompts: None,
+            sort_order: None,
+            pinned_at: None,
+            pinned_sort_order: None,
+            assistant_id: "claude".into(),
+            last_opened_at: None,
+            api_service_id: None,
+            browser_tabs: None,
+            card_runtime: None,
+        }
+    }
+
+    #[test]
+    fn manual_on_hold_is_sticky_across_activity_and_done_prs() {
+        let mut link = sample_link("on_hold", true);
+        link.pr_links.push(PrLink {
+            number: 42,
+            url: None,
+            status: Some("MERGED".into()),
+            title: None,
+            body: None,
+            approval_count: None,
+            unresolved_threads: None,
+            merge_state_status: None,
+            review_decision: None,
+            check_runs: vec![],
+        });
+
+        assert_eq!(assign_column(&link, Some(&ActivityState::ActivelyWorking), true), "on_hold");
+        assert_eq!(assign_column(&link, Some(&ActivityState::NeedsAttention), true), "on_hold");
+        assert_eq!(assign_column(&link, None, false), "on_hold");
     }
 }

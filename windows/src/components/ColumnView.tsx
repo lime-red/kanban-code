@@ -9,6 +9,7 @@ const COLUMN_ACCENT: Record<KanbanColumn, string> = {
   backlog: "#6b7280",
   in_progress: "#4f8ef7",
   requires_attention: "#d29922",
+  on_hold: "#eab308",
   in_review: "#a371f7",
   done: "#3fb950",
   all_sessions: "#6b7280",
@@ -73,7 +74,11 @@ export default function ColumnView({ column }: { column: KanbanColumn }) {
             }}
           >
             <span className="text-[12px]" style={{ color: isOver ? accent : c.textDim }}>
-              {isOver ? "Drop here" : "No cards"}
+              {isOver
+                ? "Drop here"
+                : column === "on_hold"
+                  ? "No cards — drag here to put on hold (recognises dates like 22/11)"
+                  : "No cards"}
             </span>
           </div>
         )}

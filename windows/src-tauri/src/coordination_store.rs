@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone, Utc};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use tokio::fs;
 
 use crate::ksuid;
@@ -138,6 +140,12 @@ pub struct Link {
     pub manual_overrides: ManualOverrides,
     #[serde(default)]
     pub manually_archived: bool,
+    /// Optional target date when an `on_hold` card becomes ready again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_hold_until: Option<DateTime<Utc>>,
+    /// When the user was notified that this card's `on_hold_until` date arrived.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_hold_notified_at: Option<DateTime<Utc>>,
     #[serde(default = "default_source")]
     pub source: String,
     pub prompt_body: Option<String>,
@@ -264,6 +272,8 @@ impl Link {
             last_activity: None,
             manual_overrides: ManualOverrides::default(),
             manually_archived: false,
+            on_hold_until: None,
+            on_hold_notified_at: None,
             source: "manual".to_string(),
             prompt_body: Some(prompt),
             prompt_image_paths,
@@ -289,6 +299,114 @@ impl Link {
     pub fn is_pinned(&self) -> bool {
         self.pinned_at.is_some()
     }
+
+    pub fn is_on_hold_ready(&self) -> bool {
+        if self.column != "on_hold" {
+            return false;
+        }
+        match self.on_hold_until {
+            Some(until) => Utc::now() >= until,
+            None => false,
+        }
+    }
+}
+
+/// Extract an optional target ready date from a card title (for example,
+/// `"Gitea upgrade o/h 22/11"` or `"2026-11-22"`), mirroring macOS
+/// `OnHoldDateParser.parseDate`.
+pub fn parse_on_hold_date(text: &str, now: DateTime<Local>) -> Option<DateTime<Utc>> {
+    static ISO_RE: OnceLock<Regex> = OnceLock::new();
+    static FULL_YEAR_SLASH_RE: OnceLock<Regex> = OnceLock::new();
+    static TWO_DIGIT_YEAR_SLASH_RE: OnceLock<Regex> = OnceLock::new();
+    static DAY_MONTH_SLASH_RE: OnceLock<Regex> = OnceLock::new();
+
+    let iso_re = ISO_RE
+        .get_or_init(|| Regex::new(r"(?:^|[^0-9])(\d{4})-(\d{1,2})-(\d{1,2})(?:$|[^0-9])").unwrap());
+    let full_year_re = FULL_YEAR_SLASH_RE.get_or_init(|| {
+        Regex::new(r"(?:^|[^0-9/])(\d{1,2})/(\d{1,2})/(\d{4})(?:$|[^0-9/])").unwrap()
+    });
+    let two_digit_re = TWO_DIGIT_YEAR_SLASH_RE
+        .get_or_init(|| Regex::new(r"(?:^|[^0-9/])(\d{1,2})/(\d{1,2})/(\d{2})(?:$|[^0-9/])").unwrap());
+    let day_month_re = DAY_MONTH_SLASH_RE
+        .get_or_init(|| Regex::new(r"(?:^|[^0-9/])(\d{1,2})/(\d{1,2})(?:$|[^0-9/])").unwrap());
+
+    fn parse_group(caps: &regex::Captures<'_>, idx: usize) -> Option<u32> {
+        caps.get(idx)?.as_str().parse::<u32>().ok()
+    }
+
+    fn validated_local_day(year: i32, month: u32, day: u32) -> Option<(NaiveDate, DateTime<Utc>)> {
+        if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+            return None;
+        }
+        let naive = NaiveDate::from_ymd_opt(year, month, day)?;
+        let naive_dt = naive.and_hms_opt(0, 0, 0)?;
+        let local_dt = Local
+            .from_local_datetime(&naive_dt)
+            .earliest()
+            .or_else(|| Local.from_local_datetime(&naive_dt).latest())?;
+        Some((naive, local_dt.with_timezone(&Utc)))
+    }
+
+    if let Some(caps) = iso_re.captures(text) {
+        if let (Some(year), Some(month), Some(day)) = (
+            caps.get(1).and_then(|m| m.as_str().parse::<i32>().ok()),
+            parse_group(&caps, 2),
+            parse_group(&caps, 3),
+        ) {
+            if let Some((_, utc)) = validated_local_day(year, month, day) {
+                return Some(utc);
+            }
+        }
+    }
+
+    if let Some(caps) = full_year_re.captures(text) {
+        if let (Some(day), Some(month), Some(year)) = (
+            parse_group(&caps, 1),
+            parse_group(&caps, 2),
+            caps.get(3).and_then(|m| m.as_str().parse::<i32>().ok()),
+        ) {
+            if let Some((_, utc)) = validated_local_day(year, month, day) {
+                return Some(utc);
+            }
+        }
+    }
+
+    if let Some(caps) = two_digit_re.captures(text) {
+        if let (Some(day), Some(month), Some(yy)) = (
+            parse_group(&caps, 1),
+            parse_group(&caps, 2),
+            caps.get(3).and_then(|m| m.as_str().parse::<i32>().ok()),
+        ) {
+            if let Some((_, utc)) = validated_local_day(2000 + yy, month, day) {
+                return Some(utc);
+            }
+        }
+    }
+
+    if let Some(caps) = day_month_re.captures(text) {
+        if let (Some(day), Some(month)) = (parse_group(&caps, 1), parse_group(&caps, 2)) {
+            let today = now.date_naive();
+            let current_year = today.year();
+            if let Some((candidate_naive, candidate_utc)) =
+                validated_local_day(current_year, month, day)
+            {
+                let threshold = today - chrono::Duration::days(30);
+                if candidate_naive < threshold {
+                    if let Some((_, next_year_utc)) =
+                        validated_local_day(current_year + 1, month, day)
+                    {
+                        return Some(next_year_utc);
+                    }
+                }
+                return Some(candidate_utc);
+            }
+            if let Some((_, next_year_utc)) = validated_local_day(current_year + 1, month, day) {
+                return Some(next_year_utc);
+            }
+        }
+    }
+
+    None
 }
 
 impl QueuedPrompt {
@@ -407,13 +525,44 @@ impl CoordinationStore {
     pub async fn move_card(&self, card_id: &str, column: &str) -> Result<()> {
         let mut links = self.read_links().await?;
         if let Some(link) = links.iter_mut().find(|l| l.id == card_id) {
+            link.sort_order = None;
             link.column = column.to_string();
             link.manual_overrides.column = true;
+            if column == "on_hold" {
+                if link.on_hold_until.is_none() {
+                    let title = link.display_title();
+                    link.on_hold_until = parse_on_hold_date(&title, Local::now());
+                }
+                link.on_hold_notified_at = None;
+            } else {
+                link.on_hold_until = None;
+                link.on_hold_notified_at = None;
+            }
             if column == "all_sessions" {
                 link.manually_archived = true;
                 link.pinned_at = None;
                 link.pinned_sort_order = None;
             } else if link.manually_archived {
+                link.manually_archived = false;
+            }
+            link.updated_at = Utc::now();
+        }
+        self.write_links(&links).await
+    }
+
+    pub async fn set_card_on_hold_date(
+        &self,
+        card_id: &str,
+        on_hold_until: Option<DateTime<Utc>>,
+    ) -> Result<()> {
+        let mut links = self.read_links().await?;
+        if let Some(link) = links.iter_mut().find(|l| l.id == card_id) {
+            link.on_hold_until = on_hold_until;
+            link.on_hold_notified_at = None;
+            if on_hold_until.is_some() && link.column != "on_hold" {
+                link.sort_order = None;
+                link.column = "on_hold".to_string();
+                link.manual_overrides.column = true;
                 link.manually_archived = false;
             }
             link.updated_at = Utc::now();
@@ -475,6 +624,8 @@ impl CoordinationStore {
         if let Some(link) = links.iter_mut().find(|l| l.id == card_id) {
             link.manually_archived = true;
             link.column = "all_sessions".to_string();
+            link.on_hold_until = None;
+            link.on_hold_notified_at = None;
             link.pinned_at = None;
             link.pinned_sort_order = None;
             link.updated_at = Utc::now();
@@ -557,6 +708,8 @@ impl CoordinationStore {
             last_activity: None,
             manual_overrides: ManualOverrides::default(),
             manually_archived: false,
+            on_hold_until: None,
+            on_hold_notified_at: None,
             source: "github_issue".to_string(),
             prompt_body: Some(prompt_body.to_string()),
             prompt_image_paths: None,
@@ -1084,6 +1237,8 @@ mod tests {
             last_activity: None,
             manual_overrides: Default::default(),
             manually_archived: false,
+            on_hold_until: None,
+            on_hold_notified_at: None,
             source: "manual".into(),
             prompt_body: None,
             prompt_image_paths: None,
@@ -1107,5 +1262,77 @@ mod tests {
         let json = serde_json::to_string(&link).unwrap();
         assert!(!json.contains("browserTabs"), "absent tab list must not write the key");
         assert!(!json.contains("cardRuntime"), "unpicked runtime must not write the key");
+        assert!(!json.contains("onHoldUntil"), "absent onHoldUntil must not write the key");
+    }
+
+    #[test]
+    fn parse_on_hold_date_supports_title_formats_and_year_rollover() {
+        let now = Local.with_ymd_and_hms(2026, 11, 15, 10, 0, 0).single().unwrap();
+
+        let parsed = parse_on_hold_date("Gitea upgrade o/h 22/11", now)
+            .unwrap()
+            .with_timezone(&Local);
+        assert_eq!((parsed.year(), parsed.month(), parsed.day()), (2026, 11, 22));
+
+        let iso = parse_on_hold_date("Hold until 2026-12-03 please", now)
+            .unwrap()
+            .with_timezone(&Local);
+        assert_eq!((iso.year(), iso.month(), iso.day()), (2026, 12, 3));
+
+        let two_digit = parse_on_hold_date("Follow up 05/01/27", now)
+            .unwrap()
+            .with_timezone(&Local);
+        assert_eq!((two_digit.year(), two_digit.month(), two_digit.day()), (2027, 1, 5));
+
+        let rollover = parse_on_hold_date("Renew cert 10/01", now)
+            .unwrap()
+            .with_timezone(&Local);
+        assert_eq!((rollover.year(), rollover.month(), rollover.day()), (2027, 1, 10));
+
+        assert_eq!(parse_on_hold_date("No date 99/99 here", now), None);
+    }
+
+    #[tokio::test]
+    async fn move_card_to_on_hold_parses_date_and_clears_on_leave() {
+        let base = tmp_base();
+        let store = CoordinationStore::new(Some(base.clone()));
+        let card = mk_card(&store, Some("Gitea upgrade o/h 22/11")).await;
+
+        store.move_card(&card.id, "on_hold").await.unwrap();
+        let links = store.read_links().await.unwrap();
+        let held = links.iter().find(|l| l.id == card.id).unwrap();
+        assert_eq!(held.column, "on_hold");
+        assert!(held.manual_overrides.column);
+        let until = held.on_hold_until.unwrap().with_timezone(&Local);
+        assert_eq!((until.month(), until.day()), (11, 22));
+
+        store.move_card(&card.id, "requires_attention").await.unwrap();
+        let after = store.read_links().await.unwrap();
+        let resumed = after.iter().find(|l| l.id == card.id).unwrap();
+        assert_eq!(resumed.column, "requires_attention");
+        assert!(resumed.on_hold_until.is_none());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn set_card_on_hold_date_moves_card_to_on_hold() {
+        let base = tmp_base();
+        let store = CoordinationStore::new(Some(base.clone()));
+        let card = mk_card(&store, Some("Plain card")).await;
+        let target = Utc::now() + chrono::Duration::days(2);
+
+        store.set_card_on_hold_date(&card.id, Some(target)).await.unwrap();
+        let links = store.read_links().await.unwrap();
+        let held = links.iter().find(|l| l.id == card.id).unwrap();
+        assert_eq!(held.column, "on_hold");
+        assert!(held.manual_overrides.column);
+        assert_eq!(held.on_hold_until, Some(target));
+
+        store.set_card_on_hold_date(&card.id, None).await.unwrap();
+        let cleared = store.read_links().await.unwrap();
+        let c = cleared.iter().find(|l| l.id == card.id).unwrap();
+        assert_eq!(c.column, "on_hold");
+        assert!(c.on_hold_until.is_none());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
