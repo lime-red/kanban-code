@@ -1680,4 +1680,48 @@ struct WorktreeRootTests {
         #expect(result.count == 1)
         #expect(result[0].lastActivity == trueActivity)
     }
+
+    @Test("Newer session in primary tmux replaces ended/older session and skips On Hold cards")
+    func newerPrimarySessionReplacesOlderAndSkipsOnHold() {
+        let now = Date()
+        let onHoldCard = Link(
+            id: "card_on_hold",
+            name: "Paused task",
+            projectPath: "/project",
+            column: .onHold,
+            lastActivity: now.addingTimeInterval(-3600),
+            source: .manual,
+            sessionLink: SessionLink(sessionId: "s-hold", sessionPath: "/p/s-hold.jsonl"),
+            tmuxLink: TmuxLink(sessionName: "proj-hold"),
+            launchedAt: now.addingTimeInterval(-7200)
+        )
+        let activeCard = Link(
+            id: "card_active",
+            name: "Active task",
+            projectPath: "/project",
+            column: .waiting,
+            lastActivity: now.addingTimeInterval(-600),
+            source: .manual,
+            sessionLink: SessionLink(sessionId: "s-old", sessionPath: "/p/s-old.jsonl"),
+            tmuxLink: TmuxLink(sessionName: "claude-sold"),
+            launchedAt: now.addingTimeInterval(-86400)
+        )
+
+        let snapshot = CardReconciler.DiscoverySnapshot(
+            sessions: [
+                Session(id: "s-new", projectPath: "/project", messageCount: 3, modifiedTime: now, jsonlPath: "/p/s-new.jsonl"),
+                Session(id: "s-old", projectPath: "/project", messageCount: 10, modifiedTime: now.addingTimeInterval(-600), jsonlPath: "/p/s-old.jsonl"),
+                Session(id: "s-hold", projectPath: "/project", messageCount: 5, modifiedTime: now.addingTimeInterval(-3600), jsonlPath: "/p/s-hold.jsonl"),
+            ]
+        )
+
+        let result = Dictionary(uniqueKeysWithValues: CardReconciler.reconcile(
+            existing: [onHoldCard, activeCard], snapshot: snapshot
+        ).map { ($0.id, $0) })
+
+        #expect(result.count == 2)
+        #expect(result["card_on_hold"]?.sessionLink?.sessionId == "s-hold")
+        #expect(result["card_active"]?.sessionLink?.sessionId == "s-new")
+        #expect(result["card_active"]?.lastActivity == now)
+    }
 }

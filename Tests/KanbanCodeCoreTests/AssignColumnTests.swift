@@ -298,8 +298,8 @@ struct AssignColumnTests {
 
     // MARK: - On Hold column & date parsing
 
-    @Test("Manual On Hold stays sticky until the card's own live session is actively working")
-    func onHoldPlacementIsStickyUntilActivelyWorking() {
+    @Test("Manual On Hold stays sticky even when the card's live session reports activity")
+    func onHoldPlacementIsSticky() {
         var link = Link(
             column: .onHold,
             lastActivity: Date.now.addingTimeInterval(-90000),
@@ -310,7 +310,7 @@ struct AssignColumnTests {
         #expect(AssignColumn.assign(link: link, activityState: .stale, hasLiveSession: false) == .onHold)
         #expect(AssignColumn.assign(link: link, activityState: .idleWaiting, hasLiveSession: true) == .onHold)
         #expect(AssignColumn.assign(link: link, activityState: .activelyWorking, hasLiveSession: false) == .onHold)
-        #expect(AssignColumn.assign(link: link, activityState: .activelyWorking, hasLiveSession: true) == .inProgress)
+        #expect(AssignColumn.assign(link: link, activityState: .activelyWorking, hasLiveSession: true) == .onHold)
     }
 
     @Test("OnHoldDateParser parses dd/MM titles like Gitea upgrade o/h 22/11")
