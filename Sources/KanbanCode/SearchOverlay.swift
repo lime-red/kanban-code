@@ -802,6 +802,7 @@ struct SearchOverlay: View {
         case .inReview: score += 600
         case .inProgress: score += 500
         case .waiting: score += 400
+        case .onHold: score += 350
         case .done: score += 300
         case .backlog: score += 200
         case .allSessions: score += 0
@@ -841,7 +842,7 @@ private struct CardSearchIndexItem {
         other = "\(card.link.projectPath ?? "") \(firstPrompt) \(promptBody) \(card.link.sessionLink?.sessionId ?? "") \(card.link.id) \(prText)".lowercased()
         titleWords = title.split { !$0.isLetter && !$0.isNumber }.map(String.init)
         projectWords = project.split { !$0.isLetter && !$0.isNumber }.map(String.init)
-        isActiveColumn = [.inProgress, .waiting, .inReview, .done].contains(card.column)
+        isActiveColumn = [.inProgress, .waiting, .onHold, .inReview, .done].contains(card.column)
         lastActive = card.link.lastActivity ?? card.link.updatedAt
     }
 }

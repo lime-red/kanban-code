@@ -229,6 +229,35 @@ public enum JsonlParser {
         return latest
     }
 
+    /// The newest conversation record `"timestamp"` in the transcript tail.
+    ///
+    /// Ignores non-timestamped bookkeeping records (`last-prompt`, `ai-title`,
+    /// `mode`, `permission-mode`, `session-owner`, `atis-latch`) that Claude Code
+    /// appends while sitting idle, as well as filesystem `mtime` bumps from syncing.
+    public static func extractLatestTimestamp(
+        from filePath: String,
+        within maxBytes: Int = 2 * 1024 * 1024
+    ) throws -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+
+        var latest: Date?
+        try self.scanLinesBackwards(filePath: filePath, stopAtOffset: 0, maxBytes: maxBytes) {
+            line in
+            guard line.contains("\"timestamp\""),
+                let data = line.data(using: .utf8),
+                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let raw = obj["timestamp"] as? String,
+                let date = fractional.date(from: raw) ?? plain.date(from: raw)
+            else { return false }
+            latest = date
+            return true
+        }
+        return latest
+    }
+
     private static func linkedPR(from obj: [String: Any]) -> DiscoveredPR? {
         guard obj["type"] as? String == "pr-link" else { return nil }
         let number: Int?

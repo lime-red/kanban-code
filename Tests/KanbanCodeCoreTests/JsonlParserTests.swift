@@ -192,4 +192,29 @@ struct JsonlParserTests {
         let normal: [String: Any] = ["type": "user", "message": ["content": "test"]]
         #expect(JsonlParser.isCaveatMessage(normal) == false)
     }
+
+    @Test("extractLatestTimestamp ignores trailing bookkeeping entries without timestamps")
+    func extractLatestTimestampIgnoresBookkeeping() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        let path = try writeJsonl(dir, "bookkeeping.jsonl", [
+            #"{"type":"user","sessionId":"b1","timestamp":"2026-11-12T08:15:30.123Z","message":{"content":"Earlier prompt"}}"#,
+            #"{"type":"assistant","sessionId":"b1","timestamp":"2026-11-12T08:16:00.000Z","message":{"content":[{"type":"text","text":"Done."}]}}"#,
+            #"{"type":"last-prompt","lastPrompt":"Earlier prompt","sessionId":"b1"}"#,
+            #"{"type":"ai-title","aiTitle":"Some title","sessionId":"b1"}"#,
+            #"{"type":"mode","mode":"default","sessionId":"b1"}"#,
+            #"{"type":"permission-mode","permissionMode":"default","sessionId":"b1"}"#,
+            #"{"type":"session-owner","owner":"user","sessionId":"b1"}"#,
+            #"{"type":"atis-latch","latch":true,"sessionId":"b1"}"#,
+        ])
+
+        let latest = try JsonlParser.extractLatestTimestamp(from: path)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let expected = formatter.date(from: "2026-11-12T08:16:00.000Z")
+
+        #expect(latest != nil)
+        #expect(latest == expected)
+    }
 }

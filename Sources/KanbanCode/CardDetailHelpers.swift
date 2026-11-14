@@ -384,6 +384,115 @@ struct RenameSessionDialog: View {
     }
 }
 
+/// Native sheet for choosing or clearing a card's On Hold ready date.
+struct OnHoldDatePickerSheet: View {
+    let cardTitle: String
+    let isCurrentlyOnHold: Bool
+    let currentDate: Date?
+    let onSave: (Date) -> Void
+    let onClear: () -> Void
+    let onCancel: () -> Void
+
+    @State private var selectedDate: Date
+
+    init(
+        cardTitle: String,
+        isCurrentlyOnHold: Bool,
+        currentDate: Date?,
+        onSave: @escaping (Date) -> Void,
+        onClear: @escaping () -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.cardTitle = cardTitle
+        self.isCurrentlyOnHold = isCurrentlyOnHold
+        self.currentDate = currentDate
+        self.onSave = onSave
+        self.onClear = onClear
+        self.onCancel = onCancel
+        let defaultDate = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: Date())) ?? Date()
+        _selectedDate = State(initialValue: currentDate ?? defaultDate)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Set On Hold Ready Date")
+                    .font(.app(.title3))
+                    .fontWeight(.semibold)
+                Text(cardTitle)
+                    .font(.app(.caption))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            DatePicker("Ready date", selection: $selectedDate, displayedComponents: [.date])
+                .datePickerStyle(.graphical)
+                .labelsHidden()
+
+            HStack {
+                if currentDate != nil {
+                    Button("Clear Date") {
+                        onClear()
+                    }
+                }
+                Spacer()
+                Button("Cancel") {
+                    onCancel()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Button(isCurrentlyOnHold ? "Save" : "Put on Hold") {
+                    onSave(Calendar.current.startOfDay(for: selectedDate))
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 320)
+    }
+}
+
+/// Presents `OnHoldDatePickerSheet` whenever `.kanbanCodeEditOnHoldDate` is posted.
+struct OnHoldDatePickerPresenter: ViewModifier {
+    let store: BoardStore
+    @State private var cardId: String?
+
+    func body(content: Content) -> some View {
+        content
+            .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeEditOnHoldDate).receive(on: RunLoop.main)) { notification in
+                if let id = notification.userInfo?["cardId"] as? String {
+                    cardId = id
+                }
+            }
+            .sheet(isPresented: Binding(
+                get: { cardId != nil },
+                set: { if !$0 { cardId = nil } }
+            )) {
+                if let activeCardId = cardId,
+                   let link = store.state.links[activeCardId] {
+                    let card = store.state.cards.first(where: { $0.id == activeCardId })
+                    OnHoldDatePickerSheet(
+                        cardTitle: card?.displayTitle ?? link.displayTitle,
+                        isCurrentlyOnHold: (card?.column ?? link.column) == .onHold,
+                        currentDate: card?.link.onHoldUntil ?? link.onHoldUntil,
+                        onSave: { date in
+                            store.dispatch(.setCardOnHoldDate(cardId: activeCardId, date: date))
+                            cardId = nil
+                        },
+                        onClear: {
+                            store.dispatch(.setCardOnHoldDate(cardId: activeCardId, date: nil))
+                            cardId = nil
+                        },
+                        onCancel: {
+                            cardId = nil
+                        }
+                    )
+                }
+            }
+    }
+}
+
 /// Rename dialog for terminal tabs.
 struct TabRenameItem: Identifiable {
     let id = UUID()

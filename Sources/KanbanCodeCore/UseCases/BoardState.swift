@@ -275,7 +275,7 @@ public final class BoardState: @unchecked Sendable {
     /// The visible columns (non-empty or always-shown).
     public var visibleColumns: [KanbanCodeColumn] {
         // Always show the main workflow columns; show allSessions only if it has cards
-        let alwaysVisible: [KanbanCodeColumn] = [.backlog, .inProgress, .waiting, .inReview, .done]
+        let alwaysVisible: [KanbanCodeColumn] = [.backlog, .inProgress, .waiting, .onHold, .inReview, .done]
         var result = alwaysVisible
         if cardCount(in: .allSessions) > 0 {
             result.append(.allSessions)

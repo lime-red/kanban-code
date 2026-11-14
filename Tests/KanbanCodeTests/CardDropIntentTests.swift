@@ -71,4 +71,34 @@ struct CardDropIntentTests {
 
         #expect(CardDropIntent.resolve(card, to: .backlog) == .move)
     }
+
+    @Test("Cards can be dropped into On Hold and invalid reasons are summarized")
+    func onHoldMoveAndShortReasons() {
+        let card = KanbanCodeCard(
+            link: Link(
+                id: "card_waiting",
+                name: "Gitea upgrade o/h 22/11",
+                projectPath: "/test/project",
+                column: .waiting,
+                source: .manual
+            )
+        )
+
+        #expect(CardDropIntent.resolve(card, to: .onHold) == .move)
+        #expect(CardDropIntent.resolve(card, to: .inReview).shortInvalidReason == "Needs an open PR")
+        #expect(CardDropIntent.resolve(card, to: .done).shortInvalidReason == "Needs a merged PR")
+
+        let runningCard = KanbanCodeCard(
+            link: Link(
+                id: "card_running",
+                name: "Running",
+                projectPath: "/test/project",
+                column: .waiting,
+                source: .manual,
+                tmuxLink: TmuxLink(sessionName: "claude-1")
+            )
+        )
+        #expect(CardDropIntent.resolve(runningCard, to: .inProgress).shortInvalidReason == "Runs automatically")
+        #expect(CardDropIntent.resolve(card, to: .onHold).shortInvalidReason == nil)
+    }
 }

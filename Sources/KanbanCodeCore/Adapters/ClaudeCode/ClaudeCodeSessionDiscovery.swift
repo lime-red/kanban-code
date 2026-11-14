@@ -124,12 +124,13 @@ public final class ClaudeCodeSessionDiscovery: SessionDiscovery, @unchecked Send
 
                 // Parse .jsonl for metadata
                 let indexEntry = indexById[sessionId]
+                let activityTime = (try? JsonlParser.extractLatestTimestamp(from: filePath)) ?? mtime
                 if let metadata = try? await JsonlParser.extractMetadata(from: filePath) {
                     var session = Session(id: sessionId)
                     session.name = indexEntry?.summary
                     session.projectPath = indexEntry?.projectPath
                     session.jsonlPath = filePath
-                    session.modifiedTime = mtime
+                    session.modifiedTime = activityTime
                     session.messageCount = metadata.messageCount
                     session.entrypoint = metadata.entrypoint
 
@@ -157,7 +158,7 @@ public final class ClaudeCodeSessionDiscovery: SessionDiscovery, @unchecked Send
                         session.name = session.name ?? entry.summary
                         session.projectPath = session.projectPath ?? entry.projectPath
                         session.jsonlPath = filePath
-                        session.modifiedTime = mtime
+                        session.modifiedTime = activityTime
                         cachedSessions[sessionId] = session
                     }
                 }
