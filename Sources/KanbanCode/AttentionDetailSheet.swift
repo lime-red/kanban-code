@@ -72,6 +72,7 @@ struct AttentionDetailPresenter: ViewModifier {
                     SettledAttentionSheet(onClose: { shownId = nil })
                 }
             }
+            .modifier(OnHoldDatePickerPresenter(store: store))
     }
 }
 

@@ -42,6 +42,8 @@ public enum LinkSync {
         SharedField("column", \.column),
         SharedField("manualOverrides", \.manualOverrides),
         SharedField("manuallyArchived", \.manuallyArchived),
+        SharedField("onHoldUntil", \.onHoldUntil),
+        SharedField("onHoldNotifiedAt", \.onHoldNotifiedAt),
         SharedField("promptBody", \.promptBody),
         SharedField("promptImagePaths", \.promptImagePaths),
         SharedField("parentCardId", \.parentCardId),

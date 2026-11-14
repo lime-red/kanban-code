@@ -50,6 +50,9 @@ struct CardActionEnvironment {
     var continueTargets: [(label: String, target: String)]
     /// Whether a machine is an ssh machine, shared and always on.
     var isSharedMachine: (String) -> Bool
+    var setOnHoldDate: (_ cardId: String, _ date: Date?) -> Void = { _, _ in }
+    var moveToColumn: (_ cardId: String, _ column: KanbanCodeColumn) -> Void = { _, _ in }
+    var requestOnHoldDatePicker: (_ cardId: String) -> Void = { _ in }
 
     @MainActor
     static func live(for card: KanbanCodeCard) -> CardActionEnvironment {
@@ -71,7 +74,20 @@ struct CardActionEnvironment {
                 )
             },
             continueTargets: continueTargets(for: card, state: AppComposition.shared.store.state),
-            isSharedMachine: { AppServices.sshTargets[$0] != nil }
+            isSharedMachine: { AppServices.sshTargets[$0] != nil },
+            setOnHoldDate: { cardId, date in
+                AppComposition.shared.store.dispatch(.setCardOnHoldDate(cardId: cardId, date: date))
+            },
+            moveToColumn: { cardId, column in
+                AppComposition.shared.store.dispatch(.moveCard(cardId: cardId, to: column))
+            },
+            requestOnHoldDatePicker: { cardId in
+                NotificationCenter.default.post(
+                    name: .kanbanCodeEditOnHoldDate,
+                    object: nil,
+                    userInfo: ["cardId": cardId]
+                )
+            }
         )
     }
 
@@ -260,6 +276,7 @@ struct CardActionCatalog {
                 shortcut: .togglePin, kind: .perform { actions.onSetPinned(!pinned) }
             ))
         }
+        items.append(onHoldItem)
         items.append(compactSettingsItem)
         if actions.subagentCount > 0 {
             items.append(CardActionItem(
@@ -274,6 +291,68 @@ struct CardActionCatalog {
             ))
         }
         return items
+    }
+
+    private var onHoldItem: CardActionItem {
+        let cardId = card.id
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: today)
+        let inThreeDays = calendar.date(byAdding: .day, value: 3, to: today)
+        let nextWeek = calendar.date(byAdding: .day, value: 7, to: today)
+
+        var children: [CardActionItem] = []
+        if card.column == .onHold {
+            children.append(CardActionItem(
+                id: "onHold.resume", title: "Resume to Waiting", icon: "play.circle",
+                kind: .perform { environment.moveToColumn(cardId, .waiting) }
+            ))
+        } else {
+            children.append(CardActionItem(
+                id: "onHold.hold", title: "Put on Hold (No Date)", icon: "pause.circle",
+                kind: .perform { environment.moveToColumn(cardId, .onHold) }
+            ))
+        }
+
+        if let tomorrow {
+            children.append(CardActionItem(
+                id: "onHold.tomorrow", title: "Until Tomorrow", icon: "sunrise",
+                dividerBefore: true,
+                kind: .perform { environment.setOnHoldDate(cardId, tomorrow) }
+            ))
+        }
+        if let inThreeDays {
+            children.append(CardActionItem(
+                id: "onHold.in3Days", title: "In 3 Days", icon: "calendar.badge.clock",
+                dividerBefore: tomorrow == nil,
+                kind: .perform { environment.setOnHoldDate(cardId, inThreeDays) }
+            ))
+        }
+        if let nextWeek {
+            children.append(CardActionItem(
+                id: "onHold.nextWeek", title: "Next Week", icon: "calendar",
+                kind: .perform { environment.setOnHoldDate(cardId, nextWeek) }
+            ))
+        }
+        children.append(CardActionItem(
+            id: "onHold.customDate", title: "Set Ready Date…", icon: "calendar.badge.plus",
+            kind: .perform { environment.requestOnHoldDatePicker(cardId) }
+        ))
+        if card.link.onHoldUntil != nil {
+            children.append(CardActionItem(
+                id: "onHold.clearDate", title: "Clear Ready Date", icon: "xmark.circle",
+                dividerBefore: true,
+                kind: .perform { environment.setOnHoldDate(cardId, nil) }
+            ))
+        }
+
+        return CardActionItem(
+            id: "onHold",
+            title: card.column == .onHold ? "On Hold…" : "Put on Hold",
+            icon: "pause.circle",
+            paletteTitle: "On Hold",
+            kind: .submenu(children)
+        )
     }
 
     private var compactSettingsItem: CardActionItem {

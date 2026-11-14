@@ -111,6 +111,10 @@ struct CardView: View {
             isSelected ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04),
             in: RoundedRectangle(cornerRadius: 8)
         )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(card.link.isOnHoldReady ? Color.orange.opacity(0.65) : Color.clear, lineWidth: 1.5)
+        )
         .contentShape(Rectangle())
         .onTapGesture { onSelect() }
         .contextMenu {
@@ -384,6 +388,59 @@ struct UsageLimitBadge: View {
     }
 }
 
+/// Shows an On Hold reminder badge (either upcoming ready date or overdue/ready state).
+struct OnHoldBadge: View {
+    let until: Date?
+    let isReady: Bool
+
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.setLocalizedDateFormatFromTemplate("d MMM")
+        return f
+    }()
+
+    var body: some View {
+        let dateText = until.map { Self.dateFormatter.string(from: $0) }
+        HStack(spacing: 3) {
+            Image(systemName: isReady ? "bell.badge.fill" : (until != nil ? "calendar.badge.clock" : "pause.circle"))
+                .font(.app(size: 8))
+            Text(labelText(dateText: dateText))
+                .font(.app(size: 9, weight: .medium))
+        }
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background(
+            Capsule().fill(
+                isReady ? Color.orange.opacity(0.20) :
+                until != nil ? Color.yellow.opacity(0.16) :
+                Color.secondary.opacity(0.14)
+            )
+        )
+        .foregroundStyle(isReady ? .orange : (until != nil ? .yellow : .secondary))
+        .help(helpText(dateText: dateText))
+    }
+
+    private func labelText(dateText: String?) -> String {
+        if isReady {
+            return dateText.map { "Ready · \($0)" } ?? "Ready"
+        }
+        if let dateText {
+            return "Until \(dateText)"
+        }
+        return "On hold"
+    }
+
+    private func helpText(dateText: String?) -> String {
+        if isReady {
+            return dateText.map { "On hold card is ready as of \($0)" } ?? "On hold card is ready"
+        }
+        if let dateText {
+            return "On hold until \(dateText)"
+        }
+        return "On hold (no ready date set)"
+    }
+}
+
 // MARK: - Card Badges Row (reused by CardView + SearchCardRow)
 
 /// Displays tmux, PR, rate limit, issue, image, and remote indicators for a card.
@@ -429,6 +486,11 @@ struct CardBadgesRow: View {
                     .font(.app(size: 9, weight: .medium))
                     .foregroundStyle(.secondary)
             }
+        }
+
+        // On hold badge / ready reminder
+        if card.column == .onHold || card.link.onHoldUntil != nil {
+            OnHoldBadge(until: card.link.onHoldUntil, isReady: card.link.isOnHoldReady)
         }
 
         // Its agent stopped on the plan's usage limit

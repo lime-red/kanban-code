@@ -21,15 +21,15 @@ public enum AssignColumn {
             return .allSessions
         }
 
-        // Manual backlog override is sticky: the card was parked, or brought
-        // back from the archive. Resume/launch (which clear the override)
-        // move it out, and so does a turn running in the card's own live
-        // session: the card is being worked on, from its terminal. Trailing
-        // activity alone does not count: archiving or stopping kills the
-        // session while its transcript still reads as fresh for minutes.
-        if link.manualOverrides.column && link.column == .backlog
+        // Manual backlog / on-hold override is sticky: the card was parked or put
+        // on hold. Resume/launch (which clear the override) move it out, and so
+        // does a turn running in the card's own live session: the card is being
+        // worked on, from its terminal. Trailing activity alone does not count:
+        // archiving or stopping kills the session while its transcript still
+        // reads as fresh for minutes.
+        if link.manualOverrides.column && (link.column == .backlog || link.column == .onHold)
             && !(hasLiveSession && activityState == .activelyWorking) {
-            return .backlog
+            return link.column
         }
 
         // Archive is sticky unless the card's own tmux session is running.

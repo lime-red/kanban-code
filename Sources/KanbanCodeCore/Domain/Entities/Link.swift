@@ -204,6 +204,10 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
     public var lastOpenedAt: Date?
     public var manualOverrides: ManualOverrides
     public var manuallyArchived: Bool
+    /// Optional target date when an `.onHold` card becomes ready again.
+    public var onHoldUntil: Date?
+    /// When the user was notified that this card's `onHoldUntil` date arrived.
+    public var onHoldNotifiedAt: Date?
     public var source: LinkSource
     public var promptBody: String?
     public var promptImagePaths: [String]?
@@ -256,6 +260,12 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
     public var pinnedSortOrder: Int?
 
     public var isPinned: Bool { pinnedAt != nil }
+
+    /// True when the card is in `.onHold` and its ready date has arrived.
+    public var isOnHoldReady: Bool {
+        guard column == .onHold, let onHoldUntil else { return false }
+        return Date.now >= onHoldUntil
+    }
 
     /// Which coding assistant this card uses. nil defaults to .claude for backward compat.
     public var assistant: CodingAssistant?
@@ -462,6 +472,8 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         lastOpenedAt: Date? = nil,
         manualOverrides: ManualOverrides = ManualOverrides(),
         manuallyArchived: Bool = false,
+        onHoldUntil: Date? = nil,
+        onHoldNotifiedAt: Date? = nil,
         source: LinkSource = .discovered,
         promptBody: String? = nil,
         promptImagePaths: [String]? = nil,
@@ -503,6 +515,8 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         self.lastOpenedAt = lastOpenedAt
         self.manualOverrides = manualOverrides
         self.manuallyArchived = manuallyArchived
+        self.onHoldUntil = onHoldUntil
+        self.onHoldNotifiedAt = onHoldNotifiedAt
         self.source = source
         self.promptBody = promptBody
         self.promptImagePaths = promptImagePaths
@@ -540,7 +554,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
     private enum CodingKeys: String, CodingKey {
         // Card-level
         case id, name, projectPath, column, createdAt, updatedAt, lastActivity, lastOpenedAt
-        case manualOverrides, manuallyArchived, source, promptBody, promptImagePaths, parentCardId, modelOverride
+        case manualOverrides, manuallyArchived, onHoldUntil, onHoldNotifiedAt, source, promptBody, promptImagePaths, parentCardId, modelOverride
         case selfCompactContextThresholdTokens
         case isRemote, remote, isLaunching, launchedAt, sortOrder, pinnedAt, pinnedSortOrder
         case discoveredBranches, discoveredRepos, assistant, apiServiceId, headless
@@ -566,6 +580,8 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         lastOpenedAt = try c.decodeIfPresent(Date.self, forKey: .lastOpenedAt)
         manualOverrides = try c.decodeIfPresent(ManualOverrides.self, forKey: .manualOverrides) ?? ManualOverrides()
         manuallyArchived = try c.decodeIfPresent(Bool.self, forKey: .manuallyArchived) ?? false
+        onHoldUntil = try c.decodeIfPresent(Date.self, forKey: .onHoldUntil)
+        onHoldNotifiedAt = try c.decodeIfPresent(Date.self, forKey: .onHoldNotifiedAt)
         source = try c.decodeIfPresent(LinkSource.self, forKey: .source) ?? .discovered
         promptBody = try c.decodeIfPresent(String.self, forKey: .promptBody)
         promptImagePaths = try c.decodeIfPresent([String].self, forKey: .promptImagePaths)
@@ -674,6 +690,8 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         try c.encodeIfPresent(lastOpenedAt, forKey: .lastOpenedAt)
         try c.encode(manualOverrides, forKey: .manualOverrides)
         try c.encode(manuallyArchived, forKey: .manuallyArchived)
+        try c.encodeIfPresent(onHoldUntil, forKey: .onHoldUntil)
+        try c.encodeIfPresent(onHoldNotifiedAt, forKey: .onHoldNotifiedAt)
         try c.encode(source, forKey: .source)
         try c.encodeIfPresent(promptBody, forKey: .promptBody)
         try c.encodeIfPresent(promptImagePaths, forKey: .promptImagePaths)
@@ -951,5 +969,86 @@ public struct RemoteLink: Codable, Sendable, Equatable {
         pausedReason = try? c.decodeIfPresent(RemotePausedReason.self, forKey: .pausedReason)
         pausedAt = try? c.decodeIfPresent(Date.self, forKey: .pausedAt)
         lastStatus = try? c.decodeIfPresent(String.self, forKey: .lastStatus)
+    }
+}
+
+// MARK: - On Hold Date Parser
+
+/// Extracts an optional target ready date from a card title (for example,
+/// `"Gitea upgrade o/h 22/11"` or `"2026-11-22"`).
+public enum OnHoldDateParser {
+    private static let isoDateRegex = try? NSRegularExpression(pattern: #"(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)"#)
+    private static let fullYearSlashRegex = try? NSRegularExpression(pattern: #"(?<![\d/])(\d{1,2})/(\d{1,2})/(\d{4})(?![\d/])"#)
+    private static let twoDigitYearSlashRegex = try? NSRegularExpression(pattern: #"(?<![\d/])(\d{1,2})/(\d{1,2})/(\d{2})(?![\d/])"#)
+    private static let dayMonthSlashRegex = try? NSRegularExpression(pattern: #"(?<![\d/])(\d{1,2})/(\d{1,2})(?![\d/])"#)
+
+    private static func firstGroups(in text: String, regex: NSRegularExpression?) -> [Int]? {
+        guard let regex else { return nil }
+        let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, range: nsRange), match.numberOfRanges > 1 else {
+            return nil
+        }
+        var values: [Int] = []
+        for idx in 1..<match.numberOfRanges {
+            guard let r = Range(match.range(at: idx), in: text),
+                  let val = Int(text[r]) else {
+                return nil
+            }
+            values.append(val)
+        }
+        return values
+    }
+
+    public static func parseDate(
+        from text: String,
+        now: Date = .now,
+        calendar: Calendar = .current
+    ) -> Date? {
+        if let g = firstGroups(in: text, regex: isoDateRegex), g.count == 3,
+           let date = validatedDate(year: g[0], month: g[1], day: g[2], calendar: calendar) {
+            return date
+        }
+
+        if let g = firstGroups(in: text, regex: fullYearSlashRegex), g.count == 3,
+           let date = validatedDate(year: g[2], month: g[1], day: g[0], calendar: calendar) {
+            return date
+        }
+
+        if let g = firstGroups(in: text, regex: twoDigitYearSlashRegex), g.count == 3,
+           let date = validatedDate(year: 2000 + g[2], month: g[1], day: g[0], calendar: calendar) {
+            return date
+        }
+
+        if let g = firstGroups(in: text, regex: dayMonthSlashRegex), g.count == 2 {
+            let day = g[0]
+            let month = g[1]
+            let currentYear = calendar.component(.year, from: now)
+            let todayStart = calendar.startOfDay(for: now)
+            if let candidate = validatedDate(year: currentYear, month: month, day: day, calendar: calendar) {
+                let threshold = calendar.date(byAdding: .day, value: -30, to: todayStart) ?? todayStart
+                if candidate < threshold,
+                   let nextYearDate = validatedDate(year: currentYear + 1, month: month, day: day, calendar: calendar) {
+                    return nextYearDate
+                }
+                return candidate
+            }
+            if let nextYearDate = validatedDate(year: currentYear + 1, month: month, day: day, calendar: calendar) {
+                return nextYearDate
+            }
+        }
+
+        return nil
+    }
+
+    private static func validatedDate(year: Int, month: Int, day: Int, calendar: Calendar) -> Date? {
+        guard (1...12).contains(month), (1...31).contains(day) else { return nil }
+        var comps = DateComponents()
+        comps.year = year
+        comps.month = month
+        comps.day = day
+        guard let date = calendar.date(from: comps) else { return nil }
+        let resolved = calendar.dateComponents([.year, .month, .day], from: date)
+        guard resolved.year == year, resolved.month == month, resolved.day == day else { return nil }
+        return calendar.startOfDay(for: date)
     }
 }

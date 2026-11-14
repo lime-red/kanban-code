@@ -1623,4 +1623,38 @@ struct WorktreeRootTests {
         #expect(result["card_neighbour"]?.tmuxLink == nil)
         #expect(result["card_orphan"]?.tmuxLink?.sessionName == "rush-abcdef01")
     }
+
+    @Test("reconcile heals inflated lastActivity downward when primary session modifiedTime is earlier")
+    func reconcileHealsInflatedLastActivity() {
+        let now = Date()
+        let bogusMtime = now.addingTimeInterval(-120) // 2 minutes ago
+        let trueActivity = now.addingTimeInterval(-48 * 3600) // 2 days ago
+
+        var link = Link(
+            id: "card_inflated",
+            name: "Inactive Session",
+            projectPath: "/project",
+            column: .waiting,
+            lastActivity: bogusMtime,
+            source: .discovered,
+            sessionLink: SessionLink(sessionId: "sess-1", sessionPath: "/project/sess-1.jsonl")
+        )
+        link.manualOverrides = ManualOverrides()
+
+        let session = Session(
+            id: "sess-1",
+            projectPath: "/project",
+            modifiedTime: trueActivity,
+            jsonlPath: "/project/sess-1.jsonl"
+        )
+
+        let snapshot = CardReconciler.DiscoverySnapshot(
+            sessions: [session],
+            didScanTmux: false
+        )
+
+        let result = CardReconciler.reconcile(existing: [link], snapshot: snapshot)
+        #expect(result.count == 1)
+        #expect(result[0].lastActivity == trueActivity)
+    }
 }

@@ -103,6 +103,7 @@ public enum RemoteColumn: String, Codable, Sendable, CaseIterable {
     case backlog
     case inProgress = "in_progress"
     case waiting = "requires_attention"
+    case onHold = "on_hold"
     case inReview = "in_review"
     case done
     case allSessions = "all_sessions"
@@ -112,6 +113,7 @@ public enum RemoteColumn: String, Codable, Sendable, CaseIterable {
         case .backlog: "Backlog"
         case .inProgress: "In Progress"
         case .waiting: "Waiting"
+        case .onHold: "On Hold"
         case .inReview: "In Review"
         case .done: "Done"
         case .allSessions: "All Sessions"

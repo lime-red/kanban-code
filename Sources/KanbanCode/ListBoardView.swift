@@ -462,6 +462,11 @@ private struct ListBoardSectionView: View {
         }
     }
 
+    private var invalidDropReason: String? {
+        guard let draggingCard = dragState.draggingCard, let column else { return nil }
+        return CardDropIntent.resolve(draggingCard, to: column).shortInvalidReason
+    }
+
     var body: some View {
         Section {
             if !isCollapsed {
@@ -474,12 +479,13 @@ private struct ListBoardSectionView: View {
                 count: section.cards.count,
                 isCollapsed: isCollapsed,
                 isRefreshingBacklog: isRefreshingBacklog,
+                hasReadyOnHoldCards: column == .onHold && section.cards.contains(where: \.link.isOnHoldReady),
                 onRefreshBacklog: section.kind == .column(.backlog) ? onRefreshBacklog : nil,
                 onToggleCollapse: onToggleCollapse
             )
             .overlay(alignment: .topTrailing) {
                 if isTargeted, !isCurrentDropAllowed {
-                    InvalidDropBadge()
+                    InvalidDropBadge(text: invalidDropReason ?? "Not allowed")
                         .padding(10)
                 }
             }
@@ -498,14 +504,19 @@ private struct ListBoardSectionView: View {
     @ViewBuilder
     private var sectionBody: some View {
         if section.cards.isEmpty {
-            HStack {
-                Text("No cards")
+            HStack(spacing: 6) {
+                Text(column?.emptyStateHint ?? "No cards")
                     .font(.app(.caption))
                     .foregroundStyle(.tertiary)
+                    .lineLimit(2)
+                Spacer(minLength: 4)
+                if isTargeted && !isCurrentDropAllowed {
+                    InvalidDropBadge(text: invalidDropReason ?? "Not allowed")
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 26)
+            .padding(.vertical, 6)
             .overlay(
                 Rectangle()
                     .fill(
@@ -660,6 +671,7 @@ private struct ListSectionHeader: View {
     let count: Int
     let isCollapsed: Bool
     let isRefreshingBacklog: Bool
+    var hasReadyOnHoldCards: Bool = false
     let onRefreshBacklog: (() -> Void)?
     let onToggleCollapse: () -> Void
 
@@ -675,6 +687,13 @@ private struct ListSectionHeader: View {
                     .foregroundStyle(.primary)
 
                 Spacer()
+
+                if hasReadyOnHoldCards {
+                    Image(systemName: "bell.badge.fill")
+                        .font(.app(.caption))
+                        .foregroundStyle(.orange)
+                        .help("One or more On Hold cards have reached their ready date")
+                }
 
                 if let onRefreshBacklog {
                     Button {
@@ -716,6 +735,7 @@ private struct ListSectionHeader: View {
         .shadow(color: .black.opacity(0.08), radius: 3, y: 1)
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
+        .help(kind.column?.columnRuleHint ?? "")
     }
 }
 
@@ -741,11 +761,8 @@ private struct ListSectionDropDelegate: DropDelegate {
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
         updateReorderTarget(at: info.location)
-        guard let draggingCard = dragState.draggingCard else { return nil }
-        if isSameSection || canDropCard(draggingCard, column) {
-            return DropProposal(operation: .move)
-        }
-        return nil
+        guard dragState.draggingCard != nil else { return nil }
+        return DropProposal(operation: .move)
     }
 
     func dropExited(info: DropInfo) {
@@ -778,7 +795,10 @@ private struct ListSectionDropDelegate: DropDelegate {
         }
 
         guard let sourceColumn = dragState.sourceColumn, sourceColumn != column else { return false }
-        guard canDropCard(sourceCard, column) else { return false }
+        guard canDropCard(sourceCard, column) else {
+            onMoveCard(sourceCard.id, column)
+            return false
+        }
         onMoveCard(sourceCard.id, column)
         return true
     }
@@ -925,6 +945,10 @@ private struct ListCardRowView: View {
             RoundedRectangle(cornerRadius: 8)
                 .fill(isSelected ? Color.accentColor.opacity(0.12) : Color(.controlBackgroundColor).opacity(0.4))
         )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(card.link.isOnHoldReady ? Color.orange.opacity(0.65) : Color.clear, lineWidth: 1.5)
+        )
         .contentShape(RoundedRectangle(cornerRadius: 8))
         .onTapGesture { onSelect() }
         .contextMenu {
@@ -989,9 +1013,48 @@ extension KanbanCodeColumn {
         case .backlog: .gray
         case .inProgress: .green
         case .waiting: .orange
+        case .onHold: .yellow
         case .inReview: .blue
         case .done: .purple
         case .allSessions: .secondary
+        }
+    }
+
+    var columnRuleHint: String {
+        switch self {
+        case .backlog:
+            "Create a task or drag cards here to park"
+        case .inProgress:
+            "Sessions move here automatically while working"
+        case .waiting:
+            "Sessions waiting for your input appear here"
+        case .onHold:
+            "Drag here to put on hold (recognises dates like 22/11)"
+        case .inReview:
+            "Moves here automatically when a PR is opened"
+        case .done:
+            "Moves here automatically when all PRs merge"
+        case .allSessions:
+            "All archived and older sessions"
+        }
+    }
+
+    var emptyStateHint: String {
+        switch self {
+        case .backlog:
+            "No cards — create a task or drag cards here to park"
+        case .inProgress:
+            "No cards — sessions move here automatically while working"
+        case .waiting:
+            "No cards — sessions waiting for your input appear here"
+        case .onHold:
+            "No cards — drag here to put on hold (recognises dates like 22/11)"
+        case .inReview:
+            "No cards — moves here automatically when a PR is opened"
+        case .done:
+            "No cards — moves here automatically when all PRs merge"
+        case .allSessions:
+            "No cards"
         }
     }
 }

@@ -147,12 +147,15 @@ public enum CardReconciler {
                    link.sessionLink?.sessionId == session.id, !link.isClaimed {
                     link.headless = true
                 }
-                // Different sessionId (e.g., shell tab session):
-                // don't overwrite the card's primary session. Activity only moves
-                // forward: a session from days ago that lost its own card lands
-                // on the newest card of its project by rule 4, and its age is
-                // not the card's.
-                if link.lastActivity.map({ session.modifiedTime > $0 }) ?? true {
+                // The card's primary session sets `lastActivity` exactly: that
+                // also heals cards whose activity was inflated by `mtime` bumps
+                // from idle bookkeeping or mirroring. Any other session (a shell
+                // tab, or a session from days ago that lost its own card and
+                // landed here by rule 4) only moves it forward: its age is not
+                // the card's.
+                if link.sessionLink?.sessionId == session.id {
+                    link.lastActivity = session.modifiedTime
+                } else if link.lastActivity.map({ session.modifiedTime > $0 }) ?? true {
                     link.lastActivity = session.modifiedTime
                 }
                 if link.projectPath == nil, let pp = session.projectPath {

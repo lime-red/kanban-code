@@ -473,6 +473,14 @@ public actor EffectHandler {
                 userInfo: ["chatKind": "channel", "channelName": channel]
             )
 
+        case .notifyOnHoldReady(let cardId, let cardTitle):
+            try? await notifier?.sendNotification(
+                title: "On Hold Card Ready",
+                message: "\"\(cardTitle)\" is ready to go again.",
+                imageData: nil,
+                cardId: cardId
+            )
+
         case .sendDMToDisk(let from, let to, let body, let imagePaths, let toTarget):
             do {
                 let msg = try await channelsStore.sendDirectMessage(
