@@ -518,4 +518,90 @@ struct ActivityDetectorTests {
         let state = await detector.activityState(for: "s1")
         #expect(state == .needsAttention, "Should timeout with custom activeTimeout")
     }
+
+    @Test("Notification with fresh file mtime but old transcript timestamp + idle flush → needsAttention")
+    func notificationIgnoresUntimestampedFlush() async {
+        let detector = ClaudeCodeActivityDetector()
+        let oldConversationTime = Date.now.addingTimeInterval(-3600)
+        await detector.handleHookEvent(HookEvent(
+            sessionId: "s1",
+            eventName: "Notification",
+            timestamp: oldConversationTime.addingTimeInterval(60)
+        ))
+
+        let dir = NSTemporaryDirectory() + "kanban-code-notif-flush-\(UUID().uuidString)"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let path = (dir as NSString).appendingPathComponent("test.jsonl")
+
+        let iso = ISO8601DateFormatter()
+        let ts = iso.string(from: oldConversationTime)
+        let lines = [
+            #"{"type":"assistant","timestamp":"\#(ts)","message":{"role":"assistant","content":"Done."}}"#,
+            #"{"type":"last-prompt","lastPrompt":"waiting","sessionId":"s1"}"#,
+            #"{"type":"atis-latch","atis":"","sessionId":"s1"}"#,
+        ]
+        try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+
+        let polled = await detector.pollActivity(sessionPaths: ["s1": path])
+        #expect(polled["s1"] == .ended, "Polling should use transcript timestamp, not idle flush mtime")
+
+        let state = await detector.activityState(for: "s1")
+        #expect(state == .needsAttention, "Untimestamped idle flush must not promote Notification to activelyWorking")
+    }
+
+    @Test("Stop with fresh file mtime from untimestamped idle flush → needsAttention")
+    func stopIgnoresUntimestampedFlush() async {
+        let detector = ClaudeCodeActivityDetector(stopDelay: 1)
+        let stopTime = Date.now.addingTimeInterval(-30)
+        await detector.handleHookEvent(HookEvent(
+            sessionId: "s1",
+            eventName: "Stop",
+            timestamp: stopTime
+        ))
+
+        let dir = NSTemporaryDirectory() + "kanban-code-stop-flush-\(UUID().uuidString)"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let path = (dir as NSString).appendingPathComponent("test.jsonl")
+
+        let iso = ISO8601DateFormatter()
+        let ts = iso.string(from: stopTime.addingTimeInterval(-1))
+        let lines = [
+            #"{"type":"assistant","timestamp":"\#(ts)","message":{"role":"assistant","content":"Done."}}"#,
+            #"{"type":"last-prompt","lastPrompt":"hi","sessionId":"s1"}"#,
+            #"{"type":"mode","mode":"normal","sessionId":"s1"}"#,
+        ]
+        try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+
+        let _ = await detector.pollActivity(sessionPaths: ["s1": path])
+        let state = await detector.activityState(for: "s1")
+        #expect(state == .needsAttention, "Untimestamped idle flush after Stop must not look like post-Stop work")
+    }
+
+    @Test("Fresh UserPromptSubmit on an old transcript stays activelyWorking before Claude writes new turn")
+    func freshPromptOnOldTranscriptIsActive() async {
+        let detector = ClaudeCodeActivityDetector()
+        await detector.handleHookEvent(HookEvent(
+            sessionId: "s1",
+            eventName: "UserPromptSubmit",
+            timestamp: Date.now
+        ))
+
+        let dir = NSTemporaryDirectory() + "kanban-code-old-transcript-new-prompt-\(UUID().uuidString)"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let path = (dir as NSString).appendingPathComponent("test.jsonl")
+
+        let iso = ISO8601DateFormatter()
+        let oldTs = iso.string(from: Date.now.addingTimeInterval(-86400))
+        let lines = [
+            #"{"type":"user","timestamp":"\#(oldTs)","message":{"role":"user","content":"[Request interrupted by user]"}}"#,
+        ]
+        try? lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+
+        let _ = await detector.pollActivity(sessionPaths: ["s1": path])
+        let state = await detector.activityState(for: "s1")
+        #expect(state == .activelyWorking)
+    }
 }
