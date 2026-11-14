@@ -230,7 +230,9 @@ function ContextMenu({
 }) {
   const { theme } = useTheme();
   const c = t(theme);
-  const moveTargets = COLUMNS.filter((col) => col !== card.link.column);
+  const moveTargets = COLUMNS.filter(
+    (col) => col !== card.link.column && col !== "in_review" && col !== "done"
+  );
   const isPinned = card.link.pinnedAt != null;
 
   return (

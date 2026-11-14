@@ -4,7 +4,7 @@ import {
   type DropAnimation, defaultDropAnimationSideEffects,
 } from "@dnd-kit/core";
 import { arrayMove, SortableContext, horizontalListSortingStrategy } from "@dnd-kit/sortable";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { canMergeCards, mergeCards, useBoardStore } from "../store/boardStore";
 import { COLUMNS, type CardDto, type KanbanColumn } from "../types";
@@ -20,6 +20,16 @@ const dropAnimation: DropAnimation = {
   easing: "cubic-bezier(0.25, 1, 0.5, 1)",
 };
 
+function autoColumnNotice(col: KanbanColumn): string | null {
+  if (col === "in_review") {
+    return "In Review is managed automatically — cards move here when a pull request is opened.";
+  }
+  if (col === "done") {
+    return "Done is managed automatically — cards move here when all pull requests are merged or closed.";
+  }
+  return null;
+}
+
 export default function BoardView() {
   const { moveCard, reorderCards, reorderPinnedCards, isLoading, cards, setNewTaskOpen, refresh, setMergeTargetId } = useBoardStore();
   // useShallow keeps the selector's new-array-per-call shape from triggering
@@ -28,8 +38,29 @@ export default function BoardView() {
   // memoized in the store), so a shallow compare is all React needs.
   const pinnedCards = useBoardStore(useShallow((s) => s.pinnedCards()));
   const [draggingCard, setDraggingCard] = useState<CardDto | null>(null);
+  const [dropNotice, setDropNotice] = useState<string | null>(null);
+  const noticeTimerRef = useRef<number | null>(null);
   const { theme } = useTheme();
   const c = t(theme);
+
+  useEffect(() => {
+    return () => {
+      if (noticeTimerRef.current !== null) {
+        window.clearTimeout(noticeTimerRef.current);
+      }
+    };
+  }, []);
+
+  const showDropNotice = (msg: string) => {
+    setDropNotice(msg);
+    if (noticeTimerRef.current !== null) {
+      window.clearTimeout(noticeTimerRef.current);
+    }
+    noticeTimerRef.current = window.setTimeout(() => {
+      setDropNotice(null);
+      noticeTimerRef.current = null;
+    }, 4000);
+  };
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
@@ -88,6 +119,11 @@ export default function BoardView() {
     if (COLUMNS.includes(overId as KanbanColumn)) {
       const targetColumn = overId as KanbanColumn;
       if (activeCard.link.column !== targetColumn) {
+        const notice = autoColumnNotice(targetColumn);
+        if (notice) {
+          showDropNotice(notice);
+          return;
+        }
         moveCard(activeId, targetColumn);
       }
       return;
@@ -143,6 +179,11 @@ export default function BoardView() {
       }
     } else {
       // Cross-column: move to the target card's column (merge didn't apply)
+      const notice = autoColumnNotice(overCard.link.column);
+      if (notice) {
+        showDropNotice(notice);
+        return;
+      }
       moveCard(activeId, overCard.link.column);
     }
   };
@@ -207,6 +248,27 @@ export default function BoardView() {
           )}
         </DragOverlay>
       </DndContext>
+
+      {dropNotice && (
+        <div
+          className="absolute top-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 px-4 py-2 rounded-lg shadow-lg animate-fade-in"
+          style={{
+            background: c.bgDialog,
+            border: `1px solid #d2992260`,
+            color: c.textPrimary,
+          }}
+        >
+          <span className="text-[12px] font-medium text-[#d29922]">{dropNotice}</span>
+          <button
+            onClick={() => setDropNotice(null)}
+            className="text-[11px] ml-1 opacity-70 hover:opacity-100"
+            style={{ color: c.textMuted }}
+            aria-label="Dismiss notice"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {isLoading && (
         <div

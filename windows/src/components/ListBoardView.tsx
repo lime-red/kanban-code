@@ -33,6 +33,15 @@ const COLUMN_ACCENT: Record<KanbanColumn, string> = {
   all_sessions: "#6b7280",
 };
 
+const COLUMN_EMPTY_HINT: Record<KanbanColumn, string> = {
+  backlog: "No cards — create a task or drag cards here to park",
+  in_progress: "No cards",
+  requires_attention: "No cards",
+  in_review: "No cards — moves here automatically when a PR is opened",
+  done: "No cards — moves here automatically when all PRs merge",
+  all_sessions: "No cards",
+};
+
 export default function ListBoardView() {
   const { cardsInColumn, selectedCardId, selectCard } = useBoardStore();
   const [collapsed, setCollapsed] = useState<Set<KanbanColumn>>(loadCollapsed);
@@ -97,7 +106,7 @@ export default function ListBoardView() {
                     className="px-3 py-2 text-[12px] italic"
                     style={{ color: c.textDim }}
                   >
-                    No cards
+                    {COLUMN_EMPTY_HINT[col]}
                   </div>
                 ) : (
                   cards.map((card) => (
