@@ -75,9 +75,10 @@ public enum SessionFileMover {
     }
 
     /// Encode a project path for use as a directory name.
-    /// Matches Claude CLI's encoding: resolves symlinks, then replaces / with
-    /// - and . with -.
+    /// Matches Claude CLI's encoding: resolves symlinks, then replaces all
+    /// non-ASCII-alphanumeric characters (`/`, `.`, `_`, spaces, etc.) with `-`.
     /// Example: /Users/foo/.claude/worktrees/bar → -Users-foo--claude-worktrees-bar
+    /// Example: /Users/foo/remote_code/bar → -Users-foo-remote-code-bar
     ///
     /// The symlink step matters: Claude resolves the working directory before
     /// encoding it, so a session started in a symlinked project lives under
@@ -86,8 +87,7 @@ public enum SessionFileMover {
     /// found". Visible in the wild as `/tmp` paths encoded as `-private-tmp-…`.
     public static func encodeProjectPath(_ projectPath: String) -> String {
         resolveSymlinks(projectPath)
-            .replacingOccurrences(of: "/", with: "-")
-            .replacingOccurrences(of: ".", with: "-")
+            .replacingOccurrences(of: "[^a-zA-Z0-9]", with: "-", options: .regularExpression)
     }
 
     /// Real path for a project directory, or the input when it can't be

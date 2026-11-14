@@ -15,6 +15,10 @@ struct SessionFileMoverTests {
             SessionFileMover.encodeProjectPath("/Users/foo/.claude/worktrees/bar")
                 == "-Users-foo--claude-worktrees-bar"
         )
+        #expect(
+            SessionFileMover.encodeProjectPath("/Users/foo/remote_code/bar")
+                == "-Users-foo-remote-code-bar"
+        )
     }
 
     @Test("Resolves a symlinked project to its real path before encoding")

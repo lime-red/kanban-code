@@ -116,19 +116,17 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
             self.sessionPaths[id] = path
         }
 
-        let fileManager = FileManager.default
         var states: [String: ActivityState] = [:]
 
         for (sessionId, path) in filtered {
-            guard let attrs = try? fileManager.attributesOfItem(atPath: path),
-                  let mtime = attrs[.modificationDate] as? Date else {
+            guard let effectiveDate = Self.latestTranscriptDate(path) else {
                 states[sessionId] = .ended
                 continue
             }
 
-            lastMtimes[sessionId] = mtime
+            lastMtimes[sessionId] = effectiveDate
 
-            let timeSinceModified = Date.now.timeIntervalSince(mtime)
+            let timeSinceModified = Date.now.timeIntervalSince(effectiveDate)
 
             // Polling NEVER returns .activelyWorking — only hooks can confirm active work.
             // This prevents false "In Progress" cards for sessions started externally.
@@ -173,30 +171,37 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
         case "UserPromptSubmit":
             // After a prompt, Claude is actively working. Stay in this state until:
             // 1. A Stop hook fires (handled by the "Stop" case below)
-            // 2. File stale >3s AND last jsonl line is "[Request interrupted by user]"
+            // 2. Transcript stale >3s AND last jsonl line is "[Request interrupted by user]"
             //    → Ctrl+C detected instantly without waiting for 5-minute timeout
-            // 3. File hasn't been modified for >5 minutes (safety net timeout)
+            // 3. Both prompt and transcript have been idle for >5 minutes (safety net timeout)
             //    Handles: killed process, Claude's own tool timeout, abandoned sessions
             // 4. No file path cached (shouldn't happen) — fall back to hook age
+            let timeSincePrompt = max(0, Date.now.timeIntervalSince(lastEvent.timestamp))
             guard let path = sessionPaths[sessionId] else {
-                let timeSince = Date.now.timeIntervalSince(lastEvent.timestamp)
-                if timeSince > activeTimeout {
+                if timeSincePrompt > activeTimeout {
                     return polledStates[sessionId] ?? .needsAttention
                 }
                 return .activelyWorking
             }
 
-            guard let fileAge = Self.fileAge(path) else {
+            guard let fileAge = Self.transcriptAge(path) else {
+                if timeSincePrompt > activeTimeout {
+                    return polledStates[sessionId] ?? .needsAttention
+                }
                 return .activelyWorking
             }
 
+            // Cap transcript age by prompt age so a fresh UserPromptSubmit on an old
+            // session stays activelyWorking before Claude appends the new turn line.
+            let effectiveAge = min(fileAge, timeSincePrompt)
+
             // Safety net: 5-minute timeout for killed processes / abandoned sessions
-            if fileAge > activeTimeout {
+            if effectiveAge > activeTimeout {
                 return .needsAttention
             }
 
             // Fast Ctrl+C detection: file stopped changing >3s ago, check last line
-            if fileAge > 3, Self.lastLineContainsInterrupt(path) {
+            if effectiveAge > 3, Self.lastLineContainsInterrupt(path) {
                 return .needsAttention
             }
 
@@ -221,14 +226,13 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
             // Continuation detection: ralph-loop (and similar stop-hook
             // continuation frameworks) inject `additionalContext` on Stop,
             // so Claude runs another turn WITHOUT firing a new UserPromptSubmit.
-            // The only signal we have is the transcript file being written to
-            // after the Stop event. If mtime advanced past the Stop timestamp,
-            // Claude is still working.
+            // The only signal we have is a new timestamped transcript entry after
+            // the Stop event. Un-timestamped idle bookkeeping flushes must not count.
             if let path = sessionPaths[sessionId],
-               let fileAge = Self.fileAge(path),
+               let fileAge = Self.transcriptAge(path),
                fileAge < activeTimeout {
-                let fileMtime = Date.now.addingTimeInterval(-fileAge)
-                if fileMtime.timeIntervalSince(lastEvent.timestamp) > 1.0 {
+                let lastTranscriptTime = Date.now.addingTimeInterval(-fileAge)
+                if lastTranscriptTime.timeIntervalSince(lastEvent.timestamp) > 1.0 {
                     return .activelyWorking
                 }
             }
@@ -238,11 +242,11 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
         case "Notification":
             // Notification fires when Claude wants user attention (tool
             // approval, bash permission prompt, etc). Default to
-            // needsAttention unless the transcript is still being written to
+            // needsAttention unless a timestamped transcript entry was written
             // very recently — which indicates the user just auto-approved and
             // Claude is already resuming work.
             if let path = sessionPaths[sessionId],
-               let fileAge = Self.fileAge(path),
+               let fileAge = Self.transcriptAge(path),
                fileAge < 5 {
                 return .activelyWorking
             }
@@ -253,11 +257,24 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
         }
     }
 
-    /// Quick mtime check — returns seconds since file was last modified, or nil on error.
-    private static func fileAge(_ path: String) -> TimeInterval? {
+    /// Returns the latest conversation activity date from transcript timestamps,
+    /// falling back to filesystem mtime only when no timestamped record exists.
+    /// This ignores un-timestamped idle bookkeeping writes (`last-prompt`,
+    /// `ai-title`, `mode`, `permission-mode`, `session-owner`, `atis-latch`).
+    private static func latestTranscriptDate(_ path: String) -> Date? {
+        if let transcriptDate = try? JsonlParser.extractLatestTimestamp(from: path) {
+            return transcriptDate
+        }
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
               let mtime = attrs[.modificationDate] as? Date else { return nil }
-        return Date.now.timeIntervalSince(mtime)
+        return mtime
+    }
+
+    /// Quick transcript activity age — returns seconds since the latest timestamped
+    /// transcript entry (or file mtime when none exists), or nil on error.
+    private static func transcriptAge(_ path: String) -> TimeInterval? {
+        guard let date = latestTranscriptDate(path) else { return nil }
+        return max(0, Date.now.timeIntervalSince(date))
     }
 
     /// Check if the last line of a .jsonl file contains "[Request interrupted by user]".

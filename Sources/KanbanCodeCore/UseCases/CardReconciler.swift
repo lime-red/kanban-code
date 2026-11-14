@@ -103,6 +103,10 @@ public enum CardReconciler {
         // The fuzzy matches below only consider cards with a terminal: a
         // handful, looked up for every session instead of scanning every card.
         let tmuxCardIds = existing.filter { $0.tmuxLink != nil }.map(\.id)
+        let sessionModifiedById = Dictionary(
+            snapshot.sessions.map { ($0.id, $0.modifiedTime) },
+            uniquingKeysWith: { a, _ in a }
+        )
 
         // A. Match sessions to existing cards
         for session in snapshot.sessions {
@@ -139,6 +143,25 @@ public enum CardReconciler {
                 } else if link.sessionLink?.sessionId == session.id {
                     // Same session — update path in case it moved
                     link.sessionLink?.sessionPath = session.jsonlPath
+                } else if link.column != .backlog,
+                          link.column != .onHold,
+                          link.tmuxLink != nil,
+                          (link.tmuxLink?.extraSessions?.isEmpty ?? true) {
+                    // A newer session started inside the card's primary tmux terminal
+                    // (e.g. via `/clear` or restarting Claude in the pane). Switch the
+                    // card's sessionLink to the newer session so hook events and
+                    // activity tracking follow the active conversation.
+                    let existingModified = link.sessionLink.flatMap { sessionModifiedById[$0.sessionId] }
+                        ?? link.lastActivity
+                        ?? .distantPast
+                    if session.modifiedTime.timeIntervalSince(existingModified) > 1.0 {
+                        KanbanCodeLog.info("reconciler", "Replacing session \(link.sessionLink?.sessionId.prefix(8) ?? "?") with newer \(session.id.prefix(8)) on card \(cardId.prefix(12))")
+                        link.sessionLink = SessionLink(
+                            sessionId: session.id,
+                            sessionPath: session.jsonlPath
+                        )
+                        cardIdBySessionId[session.id] = link.id
+                    }
                 }
                 // A card that only exists because discovery found a headless
                 // transcript leaves the board. Judged once: a card the user
@@ -657,17 +680,20 @@ public enum CardReconciler {
 
         // 4. Match by project path for cards that already have a session + active tmux.
         //    When a new Claude session starts in a card's tmux terminal (primary or shell tab),
-        //    match it to the existing card to prevent duplicates.
-        //    The card keeps its original sessionLink — we just suppress a new card.
+        //    match it to the existing card to prevent duplicates (and replace the primary
+        //    session when `/clear` or a restart produces a newer session). Skip parked/on-hold
+        //    cards so paused cards in the same project never absorb live work.
         if let projectPath = session.projectPath {
             let candidates = tmuxLinks.filter { link in
                 link.tmuxLink != nil
                     && link.sessionLink != nil
+                    && link.column != .backlog
+                    && link.column != .onHold
                     && acceptsSession(link)
                     && (link.projectPath == projectPath
                         || isWorktreeUnder(sessionPath: projectPath, projectRoot: link.projectPath))
             }
-            if let link = newestLaunch(candidates) {
+            if let link = mostRecentActiveCard(candidates) {
                 KanbanCodeLog.debug("reconciler", "findCard: session=\(session.id.prefix(8)) matched by projectPath+tmux (existing session) → card=\(link.id.prefix(12))")
                 return link.id
             }
@@ -701,6 +727,16 @@ public enum CardReconciler {
     private static func newestLaunch(_ candidates: some Collection<Link>) -> Link? {
         candidates.max { lhs, rhs in
             if lhs.launchAnchor != rhs.launchAnchor { return lhs.launchAnchor < rhs.launchAnchor }
+            return lhs.id < rhs.id
+        }
+    }
+
+    /// The card most recently worked on among existing tmux cards in the same project.
+    private static func mostRecentActiveCard(_ candidates: some Collection<Link>) -> Link? {
+        candidates.max { lhs, rhs in
+            let lTime = max(lhs.launchAnchor, lhs.lastActivity ?? .distantPast)
+            let rTime = max(rhs.launchAnchor, rhs.lastActivity ?? .distantPast)
+            if lTime != rTime { return lTime < rTime }
             return lhs.id < rhs.id
         }
     }
