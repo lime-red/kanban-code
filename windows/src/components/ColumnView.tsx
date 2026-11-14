@@ -14,6 +14,17 @@ const COLUMN_ACCENT: Record<KanbanColumn, string> = {
   all_sessions: "#6b7280",
 };
 
+const COLUMN_EMPTY_HINT: Record<KanbanColumn, string> = {
+  backlog: "No cards — create a task or drag cards here to park",
+  in_progress: "No cards",
+  requires_attention: "No cards",
+  in_review: "No cards — moves here automatically when a PR is opened",
+  done: "No cards — moves here automatically when all PRs merge",
+  all_sessions: "No cards",
+};
+
+const AUTO_MANAGED_COLUMNS = new Set<KanbanColumn>(["in_review", "done"]);
+
 export default function ColumnView({ column }: { column: KanbanColumn }) {
   const { cardsInColumn } = useBoardStore();
   const cards = cardsInColumn(column);
@@ -21,6 +32,7 @@ export default function ColumnView({ column }: { column: KanbanColumn }) {
   const { theme } = useTheme();
   const c = t(theme);
   const accent = COLUMN_ACCENT[column];
+  const isAutoManaged = AUTO_MANAGED_COLUMNS.has(column);
 
   return (
     <div
@@ -66,14 +78,23 @@ export default function ColumnView({ column }: { column: KanbanColumn }) {
 
         {cards.length === 0 && (
           <div
-            className="flex items-center justify-center flex-1 min-h-[80px] rounded-lg transition-colors"
+            className="flex items-center justify-center flex-1 min-h-[80px] rounded-lg px-2 text-center transition-colors"
             style={{
-              background: isOver ? accent + "08" : "transparent",
-              border: isOver ? `2px dashed ${accent}40` : "2px dashed transparent",
+              background: isOver
+                ? (isAutoManaged ? "rgba(210, 153, 34, 0.08)" : accent + "08")
+                : "transparent",
+              border: isOver
+                ? (isAutoManaged ? "2px dashed rgba(210, 153, 34, 0.45)" : `2px dashed ${accent}40`)
+                : "2px dashed transparent",
             }}
           >
-            <span className="text-[12px]" style={{ color: isOver ? accent : c.textDim }}>
-              {isOver ? "Drop here" : "No cards"}
+            <span
+              className="text-[12px]"
+              style={{ color: isOver ? (isAutoManaged ? "#d29922" : accent) : c.textDim }}
+            >
+              {isOver
+                ? (isAutoManaged ? "Managed automatically by PRs" : "Drop here")
+                : COLUMN_EMPTY_HINT[column]}
             </span>
           </div>
         )}
