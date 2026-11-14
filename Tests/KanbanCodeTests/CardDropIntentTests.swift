@@ -71,4 +71,33 @@ struct CardDropIntentTests {
 
         #expect(CardDropIntent.resolve(card, to: .backlog) == .move)
     }
+
+    @Test("Invalid drop intents summarize the short reason for the badge")
+    func shortInvalidReasons() {
+        let card = KanbanCodeCard(
+            link: Link(
+                id: "card_waiting",
+                name: "Task",
+                projectPath: "/test/project",
+                column: .waiting,
+                source: .manual
+            )
+        )
+
+        #expect(CardDropIntent.resolve(card, to: .inReview).shortInvalidReason == "Needs an open PR")
+        #expect(CardDropIntent.resolve(card, to: .done).shortInvalidReason == "Needs a merged PR")
+        #expect(CardDropIntent.resolve(card, to: .backlog).shortInvalidReason == nil)
+
+        let runningCard = KanbanCodeCard(
+            link: Link(
+                id: "card_running",
+                name: "Running",
+                projectPath: "/test/project",
+                column: .waiting,
+                source: .manual,
+                tmuxLink: TmuxLink(sessionName: "claude-1")
+            )
+        )
+        #expect(CardDropIntent.resolve(runningCard, to: .inProgress).shortInvalidReason == "Runs automatically")
+    }
 }

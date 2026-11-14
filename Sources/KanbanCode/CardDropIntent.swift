@@ -14,6 +14,14 @@ enum CardDropIntent: Equatable {
         return true
     }
 
+    var shortInvalidReason: String? {
+        guard case .invalid(let message) = self else { return nil }
+        if message.contains("already running") { return "Runs automatically" }
+        if message.contains("In Review") { return "Needs an open PR" }
+        if message.contains("Done") { return "Needs a merged PR" }
+        return "Not allowed"
+    }
+
     static func resolve(_ card: KanbanCodeCard, to column: KanbanCodeColumn) -> CardDropIntent {
         switch column {
         case .inProgress:

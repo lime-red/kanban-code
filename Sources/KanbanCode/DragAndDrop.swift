@@ -77,6 +77,11 @@ struct DroppableColumnView: View {
         return canDropCard(draggingCard, column)
     }
 
+    private var invalidDropReason: String? {
+        guard let draggingCard = dragState.draggingCard else { return nil }
+        return CardDropIntent.resolve(draggingCard, to: column).shortInvalidReason
+    }
+
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 8) {
@@ -138,7 +143,7 @@ struct DroppableColumnView: View {
                 }
 
                 // Ghost card placeholder when dragging over this column (not merging)
-                if isTargeted, dragState.mergeTargetId == nil,
+                if isTargeted, dragState.mergeTargetId == nil, isCurrentDropAllowed,
                    let dragging = dragState.draggingCard, dragState.sourceColumn != column {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(dragging.displayTitle)
@@ -176,12 +181,6 @@ struct DroppableColumnView: View {
                     lineWidth: isTargeted ? 2 : 0
                 )
         )
-        .overlay(alignment: .topTrailing) {
-            if isTargeted, dragState.mergeTargetId == nil, !isCurrentDropAllowed {
-                InvalidDropBadge()
-                    .padding(10)
-            }
-        }
         // Header pill floating on top of the column
         .overlay(alignment: .top) {
             HStack {
@@ -220,7 +219,14 @@ struct DroppableColumnView: View {
             .padding(.vertical, 12)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
             .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+            .help(column.columnRuleHint)
             .padding(4)
+        }
+        .overlay(alignment: .topTrailing) {
+            if isTargeted, dragState.mergeTargetId == nil, !isCurrentDropAllowed {
+                InvalidDropBadge(text: invalidDropReason ?? "Not allowed")
+                    .padding(10)
+            }
         }
         .onDrop(of: [.utf8PlainText], delegate: ColumnDropDelegate(
             column: column,
@@ -371,11 +377,8 @@ struct ColumnDropDelegate: DropDelegate {
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
         updateTargets(at: info.location)
-        guard let sourceCard = dragState.draggingCard else { return nil }
-        if isSameColumn || dragState.mergeTargetId != nil || canDropCard(sourceCard, column) {
-            return DropProposal(operation: .move)
-        }
-        return nil
+        guard dragState.draggingCard != nil else { return nil }
+        return DropProposal(operation: .move)
     }
 
     func dropExited(info: DropInfo) {
@@ -411,7 +414,10 @@ struct ColumnDropDelegate: DropDelegate {
 
         // Otherwise, column-level move
         guard let source = dragState.sourceColumn, source != column else { return false }
-        guard canDropCard(sourceCard, column) else { return false }
+        guard canDropCard(sourceCard, column) else {
+            onMoveCard(sourceCard.id, column)
+            return false
+        }
         onMoveCard(sourceCard.id, column)
         return true
     }
@@ -494,12 +500,14 @@ struct ReorderIndicator: View {
 }
 
 struct InvalidDropBadge: View {
+    var text: String = "Not allowed"
+
     var body: some View {
-        Label("Not allowed", systemImage: "nosign")
-            .font(.app(.caption2))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Color.red, in: Capsule())
+        Label(text, systemImage: "nosign")
+            .font(.app(.caption2, weight: .medium))
+            .foregroundStyle(Color.red.opacity(0.9))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Color.red.opacity(0.14), in: Capsule())
     }
 }
