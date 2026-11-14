@@ -293,6 +293,9 @@ impl SessionDiscovery {
                         .unwrap_or_else(Utc::now),
                     Err(_) => continue,
                 };
+                // Last real activity, not the last write: idle bookkeeping
+                // records bump the mtime without a timestamp.
+                let mtime = jsonl_parser::latest_timestamp(&file_path_str).unwrap_or(mtime);
 
                 if let Ok(Some(meta)) =
                     jsonl_parser::extract_metadata(&file_path_str).await

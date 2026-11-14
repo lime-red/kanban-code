@@ -198,3 +198,113 @@ pub async fn extract_pushed_branches(
     result.sort();
     Ok(result)
 }
+
+/// How much of a transcript's tail `latest_timestamp` reads before giving up.
+const LATEST_TIMESTAMP_MAX_BYTES: u64 = 2 * 1024 * 1024;
+
+/// The newest conversation record `"timestamp"` in the transcript's tail.
+///
+/// Claude Code appends records without a timestamp while a session sits idle
+/// (`last-prompt`, `ai-title`, `mode`, `permission-mode`, `session-owner`,
+/// `atis-latch`). Those bump the file's mtime, so mtime alone makes an idle
+/// session look active and moves its card. This reads backwards from the end
+/// and returns the first timestamped record it finds. It returns `None` when
+/// there is none within the last 2 MB, and callers fall back to mtime.
+/// Port of `JsonlParser.extractLatestTimestamp` (macOS).
+pub fn latest_timestamp(file_path: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = std::fs::File::open(file_path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let floor = len.saturating_sub(LATEST_TIMESTAMP_MAX_BYTES);
+    const CHUNK: u64 = 64 * 1024;
+
+    let mut end = len;
+    // Bytes after the last newline seen so far: the start of a line that
+    // continues past the chunk we just read.
+    let mut carry: Vec<u8> = Vec::new();
+    while end > floor {
+        let start = end.saturating_sub(CHUNK).max(floor);
+        let mut buf = vec![0u8; (end - start) as usize];
+        file.seek(SeekFrom::Start(start)).ok()?;
+        file.read_exact(&mut buf).ok()?;
+        buf.extend_from_slice(&carry);
+
+        // Every complete line in `buf` except the first (which may be cut
+        // off at `start`), newest first.
+        let mut lines: Vec<&[u8]> = buf.split(|b| *b == b'\n').collect();
+        let head = if start > floor { Some(lines.remove(0)) } else { None };
+        for line in lines.iter().rev() {
+            if let Some(ts) = timestamp_of(line) {
+                return Some(ts);
+            }
+        }
+        carry = head.map(|h| h.to_vec()).unwrap_or_default();
+        end = start;
+    }
+    None
+}
+
+fn timestamp_of(line: &[u8]) -> Option<chrono::DateTime<chrono::Utc>> {
+    let text = std::str::from_utf8(line).ok()?;
+    if !text.contains("\"timestamp\"") {
+        return None;
+    }
+    let obj: Value = serde_json::from_str(text).ok()?;
+    let raw = obj.get("timestamp")?.as_str()?;
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|d| d.with_timezone(&chrono::Utc))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_temp(name: &str, body: &str) -> String {
+        let dir = std::env::temp_dir().join(format!("kc-jsonl-{}-{}", name, std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(body.as_bytes()).unwrap();
+        path.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn latest_timestamp_ignores_trailing_bookkeeping() {
+        let body = [
+            r#"{"type":"user","sessionId":"b1","timestamp":"2026-11-12T08:15:30.123Z","message":{"content":"Earlier prompt"}}"#,
+            r#"{"type":"assistant","sessionId":"b1","timestamp":"2026-11-12T08:16:00.000Z","message":{"content":[{"type":"text","text":"Done."}]}}"#,
+            r#"{"type":"last-prompt","lastPrompt":"Earlier prompt","sessionId":"b1"}"#,
+            r#"{"type":"ai-title","aiTitle":"Some title","sessionId":"b1"}"#,
+            r#"{"type":"mode","mode":"default","sessionId":"b1"}"#,
+            r#"{"type":"permission-mode","permissionMode":"default","sessionId":"b1"}"#,
+            r#"{"type":"session-owner","owner":"user","sessionId":"b1"}"#,
+            r#"{"type":"atis-latch","latch":true,"sessionId":"b1"}"#,
+        ]
+        .join("\n")
+            + "\n";
+        let path = write_temp("bookkeeping", &body);
+        let expected = chrono::DateTime::parse_from_rfc3339("2026-11-12T08:16:00.000Z").unwrap();
+        assert_eq!(latest_timestamp(&path), Some(expected.with_timezone(&chrono::Utc)));
+    }
+
+    #[test]
+    fn latest_timestamp_reads_lines_that_span_chunks() {
+        // A timestamped record longer than one 64 KB chunk, then bookkeeping.
+        let big = "x".repeat(150 * 1024);
+        let body = format!(
+            "{{\"type\":\"assistant\",\"timestamp\":\"2026-11-12T09:00:00Z\",\"message\":{{\"content\":\"{big}\"}}}}\n{{\"type\":\"mode\",\"mode\":\"default\"}}\n"
+        );
+        let path = write_temp("span", &body);
+        let expected = chrono::DateTime::parse_from_rfc3339("2026-11-12T09:00:00Z").unwrap();
+        assert_eq!(latest_timestamp(&path), Some(expected.with_timezone(&chrono::Utc)));
+    }
+
+    #[test]
+    fn latest_timestamp_none_without_timestamps() {
+        let path = write_temp("none", "{\"type\":\"mode\"}\n");
+        assert_eq!(latest_timestamp(&path), None);
+    }
+}
