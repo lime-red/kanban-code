@@ -363,6 +363,8 @@ fn new_discovered_link(session: &Session) -> Link {
         last_activity: Some(session.modified_time),
         manual_overrides: Default::default(),
         manually_archived: false,
+        on_hold_until: None,
+        on_hold_notified_at: None,
         source: "discovered".to_string(),
         prompt_body: session.first_prompt.clone(),
         prompt_image_paths: None,

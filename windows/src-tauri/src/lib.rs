@@ -268,6 +268,28 @@ async fn rename_card(
 }
 
 #[tauri::command]
+async fn set_card_on_hold_date(
+    card_id: String,
+    on_hold_until: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let parsed = match on_hold_until {
+        Some(raw) if !raw.trim().is_empty() => {
+            let dt = chrono::DateTime::parse_from_rfc3339(raw.trim())
+                .map_err(|e| format!("Invalid onHoldUntil timestamp: {e}"))?
+                .with_timezone(&chrono::Utc);
+            Some(dt)
+        }
+        _ => None,
+    };
+    state
+        .coordination_store
+        .set_card_on_hold_date(&card_id, parsed)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn set_card_pinned(
     card_id: String,
     is_pinned: bool,
@@ -2133,6 +2155,7 @@ pub fn run() {
             reorder_cards,
             mark_card_opened,
             set_card_pinned,
+            set_card_on_hold_date,
             reorder_pinned_cards,
             add_browser_tab,
             attach_browser_webview,

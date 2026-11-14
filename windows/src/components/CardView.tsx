@@ -11,8 +11,41 @@ interface Props {
   isDragging?: boolean;
 }
 
+export function isCardOnHoldReady(card: CardDto): boolean {
+  if (card.link.column !== "on_hold" || !card.link.onHoldUntil) return false;
+  const ts = Date.parse(card.link.onHoldUntil);
+  return !Number.isNaN(ts) && ts <= Date.now();
+}
+
+function formatHoldDate(iso?: string): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
+
+export function OnHoldBadge({
+  until,
+  isReady,
+  theme,
+}: {
+  until?: string;
+  isReady: boolean;
+  theme: string;
+}) {
+  const dateText = formatHoldDate(until);
+  const label = isReady
+    ? (dateText ? `Ready · ${dateText}` : "Ready")
+    : (dateText ? `Until ${dateText}` : "On hold");
+  const color = isReady ? "#f97316" : until ? "#eab308" : "#8b8b8b";
+  const title = isReady
+    ? (dateText ? `On hold card is ready as of ${dateText}` : "On hold card is ready")
+    : (dateText ? `On hold until ${dateText}` : "On hold (no ready date set)");
+  return <Badge text={label} color={color} theme={theme} title={title} />;
+}
+
 export default function CardView({ card, isDragging = false }: Props) {
-  const { selectCard, selectedCardId, moveCard, deleteCard, archiveCard, setCardPinned, mergeTargetId } = useBoardStore();
+  const { selectCard, selectedCardId, moveCard, setCardOnHoldDate, deleteCard, archiveCard, setCardPinned, mergeTargetId } = useBoardStore();
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const { theme } = useTheme();
   const c = t(theme);
@@ -33,6 +66,8 @@ export default function CardView({ card, isDragging = false }: Props) {
   };
 
   const isSelected = selectedCardId === card.id;
+  const isOnHoldReady = isCardOnHoldReady(card);
+  const showOnHoldBadge = card.link.column === "on_hold" || card.link.onHoldUntil != null;
   const hasPR = card.link.prLinks.length > 0;
   const hasIssue = !!card.link.issueLink;
   const hasBranch = !!card.link.worktreeLink?.branch;
@@ -55,7 +90,13 @@ export default function CardView({ card, isDragging = false }: Props) {
         style={{
           ...style,
           background: isSelected ? c.bgCardSelected : c.bgCard,
-          border: `1px solid ${isSelected ? c.borderCardSelected : c.borderCard}`,
+          border: `1px solid ${
+            isSelected
+              ? c.borderCardSelected
+              : isOnHoldReady
+                ? "rgba(249, 115, 22, 0.7)"
+                : c.borderCard
+          }`,
           // Whole-card orange outline so the user knows the drop will
           // collapse this card into the dragged one. 2px to read on
           // both bg themes without redrawing layout.
@@ -125,6 +166,9 @@ export default function CardView({ card, isDragging = false }: Props) {
 
         {/* Badges row */}
         <div className="flex flex-wrap items-center gap-1.5 mt-2">
+          {showOnHoldBadge && (
+            <OnHoldBadge until={card.link.onHoldUntil} isReady={isOnHoldReady} theme={theme} />
+          )}
           {hasBranch && <Badge text={card.link.worktreeLink!.branch!} color="#4f8ef7" theme={theme} title={`Branch: ${card.link.worktreeLink!.branch}`} />}
           {hasPR && (
             <span className="inline-flex items-center gap-1">
@@ -144,6 +188,7 @@ export default function CardView({ card, isDragging = false }: Props) {
           x={contextMenu.x} y={contextMenu.y} card={card}
           onClose={() => setContextMenu(null)}
           onMove={(col) => { moveCard(card.id, col); setContextMenu(null); }}
+          onSetHoldDate={(iso) => { setCardOnHoldDate(card.id, iso); setContextMenu(null); }}
           onTogglePin={() => {
             setCardPinned(card.id, !card.link.pinnedAt);
             setContextMenu(null);
@@ -221,11 +266,20 @@ function Badge({ text, color, theme, title }: { text: string; color: string; the
   );
 }
 
+function localStartOfDayOffsetIso(days: number): string {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + days);
+  return d.toISOString();
+}
+
 function ContextMenu({
-  x, y, card, onClose, onMove, onTogglePin, onDelete, onArchive,
+  x, y, card, onClose, onMove, onSetHoldDate, onTogglePin, onDelete, onArchive,
 }: {
   x: number; y: number; card: CardDto; onClose: () => void;
-  onMove: (col: KanbanColumn) => void; onTogglePin: () => void;
+  onMove: (col: KanbanColumn) => void;
+  onSetHoldDate: (iso: string | null) => void;
+  onTogglePin: () => void;
   onDelete: () => void; onArchive: () => void;
 }) {
   const { theme } = useTheme();
@@ -267,6 +321,39 @@ function ContextMenu({
             {COLUMN_DISPLAY[col]}
           </button>
         ))}
+        <div style={{ borderTop: `1px solid ${c.border}`, margin: "4px 0" }} />
+        <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider" style={{ color: c.textDim }}>
+          On Hold
+        </div>
+        <button
+          onClick={() => onSetHoldDate(localStartOfDayOffsetIso(1))}
+          className="w-full text-left px-3 py-2 text-[13px] transition-colors"
+          style={{ color: c.textSecondary }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = c.hoverBg; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = ""; }}
+        >
+          Hold until tomorrow
+        </button>
+        <button
+          onClick={() => onSetHoldDate(localStartOfDayOffsetIso(7))}
+          className="w-full text-left px-3 py-2 text-[13px] transition-colors"
+          style={{ color: c.textSecondary }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = c.hoverBg; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = ""; }}
+        >
+          Hold for 1 week
+        </button>
+        {card.link.onHoldUntil && (
+          <button
+            onClick={() => onSetHoldDate(null)}
+            className="w-full text-left px-3 py-2 text-[13px] transition-colors"
+            style={{ color: c.textMuted }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = c.hoverBg; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = ""; }}
+          >
+            Clear hold date
+          </button>
+        )}
         <div style={{ borderTop: `1px solid ${c.border}`, margin: "4px 0" }} />
         <button
           onClick={onArchive}

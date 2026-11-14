@@ -4,6 +4,7 @@ export type KanbanColumn =
   | "backlog"
   | "in_progress"
   | "requires_attention"
+  | "on_hold"
   | "in_review"
   | "done"
   | "all_sessions";
@@ -12,6 +13,7 @@ export const COLUMN_DISPLAY: Record<KanbanColumn, string> = {
   backlog: "Backlog",
   in_progress: "In Progress",
   requires_attention: "Waiting",
+  on_hold: "On Hold",
   in_review: "In Review",
   done: "Done",
   all_sessions: "All Sessions",
@@ -21,6 +23,7 @@ export const COLUMNS: KanbanColumn[] = [
   "backlog",
   "in_progress",
   "requires_attention",
+  "on_hold",
   "in_review",
   "done",
   "all_sessions",
@@ -96,6 +99,8 @@ export interface Link {
   lastActivity?: string;
   manualOverrides: ManualOverrides;
   manuallyArchived: boolean;
+  onHoldUntil?: string;
+  onHoldNotifiedAt?: string;
   source: "discovered" | "hook" | "github_issue" | "manual";
   promptBody?: string;
   /** Absolute paths to images attached to the prompt body. Referenced via
