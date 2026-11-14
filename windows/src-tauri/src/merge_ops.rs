@@ -167,6 +167,8 @@ mod tests {
             last_activity: None,
             manual_overrides: Default::default(),
             manually_archived: false,
+            on_hold_until: None,
+            on_hold_notified_at: None,
             source: "manual".to_string(),
             prompt_body: None,
             prompt_image_paths: None,

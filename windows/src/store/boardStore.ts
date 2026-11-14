@@ -47,6 +47,7 @@ interface BoardStore {
   refresh: () => Promise<void>;
   selectCard: (id: string | null) => void;
   moveCard: (cardId: string, column: KanbanColumn) => Promise<void>;
+  setCardOnHoldDate: (cardId: string, onHoldUntil: string | null) => Promise<void>;
   reorderCards: (column: KanbanColumn, orderedIds: string[]) => void;
   deleteCard: (cardId: string) => Promise<void>;
   archiveCard: (cardId: string) => Promise<void>;
@@ -122,11 +123,52 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
     // Optimistic update
     set((state) => ({
       cards: state.cards.map((c) =>
-        c.id === cardId ? { ...c, link: { ...c.link, column } } : c
+        c.id === cardId
+          ? {
+              ...c,
+              link: {
+                ...c.link,
+                column,
+                sortOrder: undefined,
+                ...(column !== "on_hold"
+                  ? { onHoldUntil: undefined, onHoldNotifiedAt: undefined }
+                  : {}),
+              },
+            }
+          : c
       ),
     }));
     try {
       await invoke("move_card", { cardId, column });
+      if (column === "on_hold") {
+        await get().refresh();
+      }
+    } catch (e) {
+      set({ error: String(e) });
+      get().refresh();
+    }
+  },
+
+  setCardOnHoldDate: async (cardId, onHoldUntil) => {
+    set((state) => ({
+      cards: state.cards.map((c) => {
+        if (c.id !== cardId) return c;
+        const movingToHold = onHoldUntil != null && c.link.column !== "on_hold";
+        return {
+          ...c,
+          link: {
+            ...c.link,
+            onHoldUntil: onHoldUntil ?? undefined,
+            onHoldNotifiedAt: undefined,
+            column: movingToHold ? ("on_hold" as KanbanColumn) : c.link.column,
+            sortOrder: movingToHold ? undefined : c.link.sortOrder,
+            manuallyArchived: movingToHold ? false : c.link.manuallyArchived,
+          },
+        };
+      }),
+    }));
+    try {
+      await invoke("set_card_on_hold_date", { cardId, onHoldUntil });
     } catch (e) {
       set({ error: String(e) });
       get().refresh();
@@ -301,6 +343,12 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
       });
 
     const byTimeDesc = (a: CardDto, b: CardDto) => {
+      if (column === "on_hold") {
+        const now = Date.now();
+        const aReady = a.link.onHoldUntil ? Date.parse(a.link.onHoldUntil) <= now : false;
+        const bReady = b.link.onHoldUntil ? Date.parse(b.link.onHoldUntil) <= now : false;
+        if (aReady !== bReady) return aReady ? -1 : 1;
+      }
       const ta = a.link.lastActivity ?? a.link.updatedAt;
       const tb = b.link.lastActivity ?? b.link.updatedAt;
       return tb.localeCompare(ta);

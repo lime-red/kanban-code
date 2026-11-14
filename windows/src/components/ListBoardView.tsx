@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useBoardStore } from "../store/boardStore";
 import { COLUMNS, COLUMN_DISPLAY, type CardDto, type KanbanColumn } from "../types";
 import { useTheme, t } from "../theme";
+import { OnHoldBadge, isCardOnHoldReady } from "./CardView";
 
 const COLLAPSE_STORAGE_KEY = "kanban.listCollapsedColumns";
 
@@ -28,6 +29,7 @@ const COLUMN_ACCENT: Record<KanbanColumn, string> = {
   backlog: "#8b8b8b",
   in_progress: "#3fb950",
   requires_attention: "#d29922",
+  on_hold: "#eab308",
   in_review: "#4f8ef7",
   done: "#a371f7",
   all_sessions: "#6b7280",
@@ -37,6 +39,7 @@ const COLUMN_EMPTY_HINT: Record<KanbanColumn, string> = {
   backlog: "No cards — create a task or drag cards here to park",
   in_progress: "No cards",
   requires_attention: "No cards",
+  on_hold: "No cards — drag here to put on hold (recognises dates like 22/11)",
   in_review: "No cards — moves here automatically when a PR is opened",
   done: "No cards — moves here automatically when all PRs merge",
   all_sessions: "No cards",
@@ -143,6 +146,8 @@ function ListCardRow({
   const branch = card.link.worktreeLink?.branch;
   const pr = card.link.prLinks[0];
   const issue = card.link.issueLink;
+  const isOnHoldReady = isCardOnHoldReady(card);
+  const showOnHoldBadge = card.link.column === "on_hold" || card.link.onHoldUntil != null;
 
   return (
     <div
@@ -150,7 +155,13 @@ function ListCardRow({
       className="flex items-center gap-2 px-3 py-2 rounded-md cursor-pointer"
       style={{
         background: isSelected ? c.bgCardSelected : c.bgCard,
-        border: `1px solid ${isSelected ? c.borderCardSelected : c.borderCard}`,
+        border: `1px solid ${
+          isSelected
+            ? c.borderCardSelected
+            : isOnHoldReady
+              ? "rgba(249, 115, 22, 0.7)"
+              : c.borderCard
+        }`,
       }}
       onMouseEnter={(e) => {
         if (!isSelected) e.currentTarget.style.background = c.bgCardHover;
@@ -171,6 +182,9 @@ function ListCardRow({
           {card.displayTitle}
         </span>
         <div className="flex items-center gap-2 text-[11px]" style={{ color: c.textMuted }}>
+          {showOnHoldBadge && (
+            <OnHoldBadge until={card.link.onHoldUntil} isReady={isOnHoldReady} theme={theme} />
+          )}
           {card.projectName && <span className="truncate">{card.projectName}</span>}
           {branch && <span className="truncate">⎇ {branch}</span>}
           {pr && <span>PR #{pr.number}</span>}
