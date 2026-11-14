@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useState, useRef, useCallback, useMemo } from "react";
+import { forwardRef, useEffect, useLayoutEffect, useState, useRef, useCallback, useMemo } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -1231,6 +1231,9 @@ export default function CardDetailView() {
         {activeTab === "history" && (
           <div className="overflow-y-auto flex-1 flex flex-col min-h-0">
             <HistoryTab
+              // One scroll state per conversation: switching cards or sessions
+              // remounts the list instead of carrying the old offset over.
+              key={sessionId ?? card.id}
               turns={turns}
               transcriptPage={transcriptPage}
               loading={loadingTranscript}
@@ -1713,6 +1716,19 @@ function HistoryTab({ turns, transcriptPage, loading, fontSize, onLoadMore, sear
       window.removeEventListener("blur", blur);
     };
   }, [onCheckpoint]);
+
+  // Open at the newest turn, like the macOS history and chat views. The
+  // list used to open at scrollTop 0, the oldest turn of a long session.
+  // Runs once per mount (the parent keys this tab by session), when the
+  // first turns arrive. Later appends leave the reader where they are.
+  const openedAtBottom = useRef(false);
+  useLayoutEffect(() => {
+    if (openedAtBottom.current || turns.length === 0) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    openedAtBottom.current = true;
+  }, [turns.length]);
 
   // Scroll to current match
   useEffect(() => {
