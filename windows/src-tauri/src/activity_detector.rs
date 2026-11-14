@@ -31,6 +31,19 @@ impl ActivityState {
     }
 }
 
+/// When the session last did something: its newest timestamped transcript
+/// record, or the file's mtime when it has none. Idle bookkeeping records
+/// (`ai-title`, `mode`, `last-prompt`, …) carry no timestamp but do bump the
+/// mtime, so reading mtime alone showed idle sessions as actively working.
+fn last_activity_time(jsonl_path: &str) -> SystemTime {
+    if let Some(ts) = crate::jsonl_parser::latest_timestamp(jsonl_path) {
+        return SystemTime::from(ts);
+    }
+    std::fs::metadata(jsonl_path)
+        .and_then(|m| m.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
 /// Tracks JSONL file mtimes across poll cycles to detect whether Claude
 /// is actively writing (mtime changing) vs stopped (mtime stable).
 #[derive(Debug, Default)]
@@ -51,9 +64,7 @@ impl ActivityTracker {
     /// - file modified > 5min ago → Ended
     /// - file modified > 24h ago → Stale
     pub fn detect(&mut self, jsonl_path: &str) -> ActivityState {
-        let mtime = std::fs::metadata(jsonl_path)
-            .and_then(|m| m.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let mtime = last_activity_time(jsonl_path);
 
         let elapsed = SystemTime::now()
             .duration_since(mtime)
@@ -93,9 +104,7 @@ impl ActivityTracker {
 
 /// Stateless fallback for one-off checks (used where we don't have a tracker).
 pub fn detect_activity(jsonl_path: &str) -> ActivityState {
-    let mtime = std::fs::metadata(jsonl_path)
-        .and_then(|m| m.modified())
-        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let mtime = last_activity_time(jsonl_path);
 
     let elapsed = SystemTime::now()
         .duration_since(mtime)

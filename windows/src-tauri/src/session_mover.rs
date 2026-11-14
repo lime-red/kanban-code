@@ -65,14 +65,21 @@ pub async fn move_session(
 }
 
 /// Encode a project path into Claude's projects-dir naming scheme.
-/// Replaces both `/` and `.` with `-`. Backslashes are first normalized
-/// to forward slashes so Windows paths produce the same encoding the
-/// macOS app generates.
+/// Matches Claude Code itself: every character that is not an ASCII letter
+/// or digit becomes `-` (so `/`, `\`, `.`, `_`, `:` and spaces all do).
 ///
-/// Example: `C:\Users\foo\repo` → `C:-Users-foo-repo` (after backslash
-/// normalization) → final `C:-Users-foo-repo`.
+/// Examples:
+/// - `/Users/foo/.claude/worktrees/bar` → `-Users-foo--claude-worktrees-bar`
+/// - `/Users/foo/remote_code/bar` → `-Users-foo-remote-code-bar`
+/// - `C:\Users\foo\repo` → `C--Users-foo-repo`
+///
+/// The old encoding only replaced `/` and `.`, which kept the drive colon
+/// (`C:-Users-…`, not a valid directory name on Windows) and underscores, so
+/// a moved session landed in a directory Claude never reads.
 pub fn encode_project_path(path: &str) -> String {
-    path.replace('\\', "/").replace('/', "-").replace('.', "-")
+    path.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
 }
 
 fn claude_projects_dir() -> Result<PathBuf> {
@@ -92,5 +99,14 @@ mod tests {
             encode_project_path("/Users/foo/.claude/worktrees/bar"),
             "-Users-foo--claude-worktrees-bar"
         );
+    }
+
+    #[test]
+    fn encode_replaces_every_non_alphanumeric() {
+        assert_eq!(
+            encode_project_path("/Users/foo/remote_code/bar"),
+            "-Users-foo-remote-code-bar"
+        );
+        assert_eq!(encode_project_path(r"C:\Users\foo\my repo"), "C--Users-foo-my-repo");
     }
 }

@@ -246,17 +246,27 @@ async fn backfill_worktree_paths(links: &mut [Link]) {
 }
 
 fn format_relative_time(date: DateTime<Utc>) -> String {
-    let secs = (Utc::now() - date).num_seconds();
+    format_relative_time_at(date, chrono::Local::now())
+}
+
+/// Relative time by the local calendar, not 24-hour buckets: something from
+/// 23:50 last night reads "yesterday" at 00:10, and something from 08:00
+/// yesterday is not "15h ago" at 23:00 today. Port of the macOS
+/// `formatRelativeTime` fix.
+fn format_relative_time_at(date: DateTime<Utc>, now: chrono::DateTime<chrono::Local>) -> String {
+    let secs = (now.with_timezone(&Utc) - date).num_seconds();
     if secs < 60 {
         return "just now".to_string();
     }
     if secs < 3600 {
         return format!("{}m ago", secs / 60);
     }
-    if secs < 86400 {
-        return format!("{}h ago", secs / 3600);
+    let then_day = date.with_timezone(&chrono::Local).date_naive();
+    let today = now.date_naive();
+    let days = (today - then_day).num_days();
+    if days <= 0 {
+        return format!("{}h ago", (secs / 3600).max(1));
     }
-    let days = secs / 86400;
     if days == 1 {
         return "yesterday".to_string();
     }
@@ -264,4 +274,42 @@ fn format_relative_time(date: DateTime<Utc>) -> String {
         return format!("{}d ago", days);
     }
     format!("{}mo ago", days / 30)
+}
+
+#[cfg(test)]
+mod relative_time_tests {
+    use super::*;
+    use chrono::{Local, TimeZone};
+
+    fn local(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> chrono::DateTime<Local> {
+        Local.with_ymd_and_hms(y, mo, d, h, mi, 0).single().unwrap()
+    }
+
+    #[test]
+    fn just_after_midnight_last_night_is_yesterday() {
+        let now = local(2026, 11, 15, 0, 10);
+        let then = local(2026, 11, 14, 22, 50).with_timezone(&Utc);
+        assert_eq!(format_relative_time_at(then, now), "yesterday");
+    }
+
+    #[test]
+    fn same_day_is_hours() {
+        let now = local(2026, 11, 15, 23, 0);
+        let then = local(2026, 11, 15, 8, 0).with_timezone(&Utc);
+        assert_eq!(format_relative_time_at(then, now), "15h ago");
+    }
+
+    #[test]
+    fn two_calendar_days_back_is_2d_even_under_48h() {
+        let now = local(2026, 11, 15, 1, 0);
+        let then = local(2026, 11, 13, 23, 0).with_timezone(&Utc);
+        assert_eq!(format_relative_time_at(then, now), "2d ago");
+    }
+
+    #[test]
+    fn future_and_recent_are_just_now() {
+        let now = local(2026, 11, 15, 12, 0);
+        assert_eq!(format_relative_time_at(local(2026, 11, 15, 12, 5).with_timezone(&Utc), now), "just now");
+        assert_eq!(format_relative_time_at(local(2026, 11, 15, 11, 30).with_timezone(&Utc), now), "30m ago");
+    }
 }

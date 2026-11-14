@@ -219,10 +219,12 @@ fn project_matches(session: &Session, link: &Link) -> bool {
     let Some(link_path) = &link.project_path else {
         return true;
     };
-    session_path == link_path
-        || session_path.starts_with(&format!("{}/", link_path))
-        || session_path.contains("/.claude/worktrees/")
-            && session_path.starts_with(&format!("{}/", link_path))
+    // Compare with `/` separators: on Windows the transcript's cwd is
+    // `C:\repo\.claude\worktrees\x`, which never starts with `C:\repo/`.
+    let session_path = session_path.replace('\\', "/");
+    let link_path = link_path.replace('\\', "/");
+    let link_path = link_path.trim_end_matches('/');
+    session_path == link_path || session_path.starts_with(&format!("{}/", link_path))
 }
 
 fn strip_refs_heads(branch: &str) -> &str {
@@ -275,5 +277,42 @@ fn new_discovered_link(session: &Session) -> Link {
         api_service_id: None,
         browser_tabs: None,
         card_runtime: None,
+    }
+}
+
+#[cfg(test)]
+mod project_match_tests {
+    use super::*;
+
+    fn session(path: &str) -> Session {
+        Session {
+            id: "s".into(),
+            name: None,
+            first_prompt: None,
+            project_path: Some(path.into()),
+            git_branch: None,
+            message_count: 1,
+            modified_time: chrono::Utc::now(),
+            jsonl_path: None,
+        }
+    }
+
+    fn link(path: &str) -> Link {
+        let mut l = new_discovered_link(&session(path));
+        l.project_path = Some(path.into());
+        l
+    }
+
+    #[test]
+    fn windows_worktree_matches_its_project() {
+        assert!(project_matches(&session(r"C:\repo\.claude\worktrees\feat"), &link(r"C:\repo")));
+        assert!(project_matches(&session(r"C:\repo"), &link(r"C:\repo\")));
+    }
+
+    #[test]
+    fn sibling_prefix_does_not_match() {
+        assert!(!project_matches(&session(r"C:\repo-two"), &link(r"C:\repo")));
+        assert!(!project_matches(&session("/x/repo-two"), &link("/x/repo")));
+        assert!(project_matches(&session("/x/repo/sub"), &link("/x/repo")));
     }
 }
