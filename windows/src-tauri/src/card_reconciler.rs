@@ -37,6 +37,9 @@ pub fn reconcile(existing: Vec<Link>, sessions: Vec<Session>) -> Vec<Link> {
         }
     }
 
+    let session_modified_by_id: HashMap<&str, chrono::DateTime<chrono::Utc>> =
+        sessions.iter().map(|s| (s.id.as_str(), s.modified_time)).collect();
+
     // A. Match each session to an existing card (or create a new one)
     for session in &sessions {
         let card_id = find_card_for_session(
@@ -48,20 +51,63 @@ pub fn reconcile(existing: Vec<Link>, sessions: Vec<Session>) -> Vec<Link> {
 
         if let Some(card_id) = card_id {
             if let Some(link) = links_by_id.get_mut(&card_id) {
+                if link.manually_archived {
+                    continue;
+                }
                 if link.session_link.is_none() {
                     link.session_link = Some(SessionLink {
                         session_id: session.id.clone(),
                         session_path: session.jsonl_path.clone(),
                         session_number: None,
                     });
+                    link.updated_at = chrono::Utc::now();
                     card_id_by_session_id.insert(session.id.clone(), card_id.clone());
-                } else {
-                    // Update path in case file moved
+                } else if link
+                    .session_link
+                    .as_ref()
+                    .map(|sl| sl.session_id.as_str())
+                    == Some(session.id.as_str())
+                {
+                    // Same session — update path in case file moved
                     if let Some(sl) = &mut link.session_link {
                         sl.session_path = session.jsonl_path.clone();
                     }
+                } else if link.column != "backlog"
+                    && link.column != "on_hold"
+                    && link.column != "all_sessions"
+                    && link.column != "done"
+                {
+                    // A newer session started in the card's project (e.g. via
+                    // `/clear` or restarting Claude in the card's terminal).
+                    // Switch `session_link` to the newer session so activity
+                    // tracking follows the active conversation.
+                    let existing_modified = link
+                        .session_link
+                        .as_ref()
+                        .and_then(|sl| session_modified_by_id.get(sl.session_id.as_str()).copied())
+                        .or(link.last_activity);
+                    let is_newer = existing_modified
+                        .map(|em| (session.modified_time - em).num_milliseconds() > 1000)
+                        .unwrap_or(true);
+                    if is_newer {
+                        link.session_link = Some(SessionLink {
+                            session_id: session.id.clone(),
+                            session_path: session.jsonl_path.clone(),
+                            session_number: None,
+                        });
+                        link.updated_at = chrono::Utc::now();
+                        card_id_by_session_id.insert(session.id.clone(), card_id.clone());
+                    }
                 }
-                link.last_activity = Some(session.modified_time);
+
+                let is_primary_session = link
+                    .session_link
+                    .as_ref()
+                    .map(|sl| sl.session_id.as_str())
+                    == Some(session.id.as_str());
+                if is_primary_session || link.last_activity.is_none() {
+                    link.last_activity = Some(session.modified_time);
+                }
                 if link.project_path.is_none() {
                     link.project_path = session.project_path.clone();
                 }
@@ -209,7 +255,80 @@ fn find_card_for_session(
         }
     }
 
+    // 3. Pending card in same project (session_link is None, e.g. manual/issue
+    //    card whose terminal just started a Claude session without a worktree branch).
+    if session.project_path.is_some() {
+        let best_pending = links_by_id
+            .values()
+            .filter(|l| {
+                !l.manually_archived
+                    && l.session_link.is_none()
+                    && project_matches(session, l)
+                    && (session.modified_time - l.updated_at).num_seconds() >= -120
+            })
+            .max_by(|a, b| {
+                let pa = prompt_matches(a, session);
+                let pb = prompt_matches(b, session);
+                pa.cmp(&pb)
+                    .then_with(|| a.updated_at.cmp(&b.updated_at))
+                    .then_with(|| a.id.cmp(&b.id))
+            });
+        if let Some(link) = best_pending {
+            return Some(link.id.clone());
+        }
+    }
+
+    // 4. Active card in same project whose existing session is replaced by a
+    //    newer session (e.g. `/clear` or restarting Claude in the card's terminal).
+    //    Skip parked/held/archive/done cards so inactive cards don't absorb live work,
+    //    and require the incoming session to be strictly newer than the card's activity.
+    if session.project_path.is_some() {
+        let best_active = links_by_id
+            .values()
+            .filter(|l| {
+                !l.manually_archived
+                    && l.session_link.is_some()
+                    && l.column != "backlog"
+                    && l.column != "on_hold"
+                    && l.column != "all_sessions"
+                    && l.column != "done"
+                    && project_matches(session, l)
+            })
+            .filter(|l| {
+                let card_time = l.last_activity.unwrap_or(l.updated_at);
+                (session.modified_time - card_time).num_milliseconds() > 1000
+            })
+            .max_by(|a, b| {
+                let ta = a.last_activity.unwrap_or(a.updated_at);
+                let tb = b.last_activity.unwrap_or(b.updated_at);
+                ta.cmp(&tb).then_with(|| a.id.cmp(&b.id))
+            });
+        if let Some(link) = best_active {
+            return Some(link.id.clone());
+        }
+    }
+
     None
+}
+
+fn prompt_matches(link: &Link, session: &Session) -> bool {
+    let Some(p) = link
+        .prompt_body
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return false;
+    };
+    let Some(fp) = session
+        .first_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return false;
+    };
+    p == fp || fp.contains(p) || p.contains(fp)
 }
 
 fn project_matches(session: &Session, link: &Link) -> bool {
@@ -314,5 +433,124 @@ mod project_match_tests {
         assert!(!project_matches(&session(r"C:\repo-two"), &link(r"C:\repo")));
         assert!(!project_matches(&session("/x/repo-two"), &link("/x/repo")));
         assert!(project_matches(&session("/x/repo/sub"), &link("/x/repo")));
+    }
+
+    #[test]
+    fn replaces_older_session_in_same_project_when_newer_session_starts() {
+        let t1 = chrono::Utc::now() - chrono::Duration::minutes(10);
+        let t2 = chrono::Utc::now();
+
+        let mut existing = link(r"C:\repo");
+        existing.id = "card-1".into();
+        existing.column = "requires_attention".into();
+        existing.last_activity = Some(t1);
+        existing.session_link = Some(SessionLink {
+            session_id: "old-sess".into(),
+            session_path: Some(r"C:\old.jsonl".into()),
+            session_number: None,
+        });
+
+        let mut new_sess = session(r"C:\repo");
+        new_sess.id = "new-sess".into();
+        new_sess.modified_time = t2;
+        new_sess.jsonl_path = Some(r"C:\new.jsonl".into());
+
+        let result = reconcile(vec![existing], vec![new_sess]);
+        assert_eq!(result.len(), 1);
+        let updated = &result[0];
+        assert_eq!(updated.id, "card-1");
+        assert_eq!(
+            updated.session_link.as_ref().map(|s| s.session_id.as_str()),
+            Some("new-sess")
+        );
+        assert_eq!(
+            updated
+                .session_link
+                .as_ref()
+                .and_then(|s| s.session_path.as_deref()),
+            Some(r"C:\new.jsonl")
+        );
+        assert_eq!(updated.last_activity, Some(t2));
+    }
+
+    #[test]
+    fn does_not_replace_session_on_backlog_or_on_hold_card() {
+        let t1 = chrono::Utc::now() - chrono::Duration::minutes(10);
+        let t2 = chrono::Utc::now();
+
+        for parked_col in ["backlog", "on_hold"] {
+            let mut parked = link(r"C:\repo");
+            parked.id = format!("card-{parked_col}");
+            parked.column = parked_col.into();
+            parked.last_activity = Some(t1);
+            parked.session_link = Some(SessionLink {
+                session_id: "old-sess".into(),
+                session_path: Some(r"C:\old.jsonl".into()),
+                session_number: None,
+            });
+
+            let mut new_sess = session(r"C:\repo");
+            new_sess.id = "new-sess".into();
+            new_sess.modified_time = t2;
+            new_sess.jsonl_path = Some(r"C:\new.jsonl".into());
+
+            let result = reconcile(vec![parked], vec![new_sess]);
+            assert_eq!(result.len(), 2, "parked card in {parked_col} must keep its own session");
+            let kept = result.iter().find(|c| c.id == format!("card-{parked_col}")).unwrap();
+            assert_eq!(
+                kept.session_link.as_ref().map(|s| s.session_id.as_str()),
+                Some("old-sess")
+            );
+        }
+    }
+
+    #[test]
+    fn links_pending_manual_card_in_same_project() {
+        let now = chrono::Utc::now();
+        let mut pending = link(r"C:\repo");
+        pending.id = "card-pending".into();
+        pending.source = "manual".into();
+        pending.column = "backlog".into();
+        pending.session_link = None;
+        pending.prompt_body = Some("Implement on hold column".into());
+        pending.updated_at = now - chrono::Duration::seconds(30);
+
+        let mut sess = session(r"C:\repo");
+        sess.id = "fresh-sess".into();
+        sess.first_prompt = Some("Implement on hold column".into());
+        sess.modified_time = now;
+        sess.jsonl_path = Some(r"C:\fresh.jsonl".into());
+
+        let result = reconcile(vec![pending], vec![sess]);
+        assert_eq!(result.len(), 1);
+        let linked = &result[0];
+        assert_eq!(linked.id, "card-pending");
+        assert_eq!(
+            linked.session_link.as_ref().map(|s| s.session_id.as_str()),
+            Some("fresh-sess")
+        );
+    }
+
+    #[test]
+    fn does_not_hijack_all_sessions_card_for_new_session() {
+        let t1 = chrono::Utc::now() - chrono::Duration::days(3);
+        let t2 = chrono::Utc::now();
+
+        let mut old_card = link(r"C:\repo");
+        old_card.id = "card-old".into();
+        old_card.column = "all_sessions".into();
+        old_card.last_activity = Some(t1);
+        old_card.session_link = Some(SessionLink {
+            session_id: "old-sess".into(),
+            session_path: None,
+            session_number: None,
+        });
+
+        let mut new_sess = session(r"C:\repo");
+        new_sess.id = "new-sess".into();
+        new_sess.modified_time = t2;
+
+        let result = reconcile(vec![old_card], vec![new_sess]);
+        assert_eq!(result.len(), 2);
     }
 }
