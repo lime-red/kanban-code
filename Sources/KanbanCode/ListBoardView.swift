@@ -474,6 +474,7 @@ private struct ListBoardSectionView: View {
                 count: section.cards.count,
                 isCollapsed: isCollapsed,
                 isRefreshingBacklog: isRefreshingBacklog,
+                hasReadyOnHoldCards: section.kind == .column(.onHold) && section.cards.contains(where: \.link.isOnHoldReady),
                 onRefreshBacklog: section.kind == .column(.backlog) ? onRefreshBacklog : nil,
                 onToggleCollapse: onToggleCollapse
             )
@@ -660,6 +661,7 @@ private struct ListSectionHeader: View {
     let count: Int
     let isCollapsed: Bool
     let isRefreshingBacklog: Bool
+    var hasReadyOnHoldCards: Bool = false
     let onRefreshBacklog: (() -> Void)?
     let onToggleCollapse: () -> Void
 
@@ -675,6 +677,13 @@ private struct ListSectionHeader: View {
                     .foregroundStyle(.primary)
 
                 Spacer()
+
+                if hasReadyOnHoldCards {
+                    Image(systemName: "bell.badge.fill")
+                        .font(.app(.caption))
+                        .foregroundStyle(.orange)
+                        .help("One or more On Hold cards have reached their ready date")
+                }
 
                 if let onRefreshBacklog {
                     Button {
@@ -925,6 +934,10 @@ private struct ListCardRowView: View {
             RoundedRectangle(cornerRadius: 8)
                 .fill(isSelected ? Color.accentColor.opacity(0.12) : Color(.controlBackgroundColor).opacity(0.4))
         )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(card.link.isOnHoldReady ? Color.orange.opacity(0.65) : Color.clear, lineWidth: 1.5)
+        )
         .contentShape(RoundedRectangle(cornerRadius: 8))
         .onTapGesture { onSelect() }
         .contextMenu {
@@ -989,6 +1002,7 @@ extension KanbanCodeColumn {
         case .backlog: .gray
         case .inProgress: .green
         case .waiting: .orange
+        case .onHold: .yellow
         case .inReview: .blue
         case .done: .purple
         case .allSessions: .secondary

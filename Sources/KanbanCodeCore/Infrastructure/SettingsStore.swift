@@ -125,7 +125,17 @@ public struct Settings: Codable, Sendable {
             ?? (try? container.decodeIfPresent(String.self, forKey: .skill)) ?? ""
         githubIssuePromptTemplate = (try? container.decodeIfPresent(String.self, forKey: .githubIssuePromptTemplate))
             ?? "#${number}: ${title}\n\n${body}"
-        columnOrder = (try? container.decodeIfPresent([KanbanCodeColumn].self, forKey: .columnOrder)) ?? KanbanCodeColumn.allCases
+        var decodedOrder = (try? container.decodeIfPresent([KanbanCodeColumn].self, forKey: .columnOrder)) ?? KanbanCodeColumn.allCases
+        if !decodedOrder.contains(.onHold) {
+            if let waitingIdx = decodedOrder.firstIndex(of: .waiting) {
+                decodedOrder.insert(.onHold, at: waitingIdx + 1)
+            } else if let reviewIdx = decodedOrder.firstIndex(of: .inReview) {
+                decodedOrder.insert(.onHold, at: reviewIdx)
+            } else {
+                decodedOrder.append(.onHold)
+            }
+        }
+        columnOrder = decodedOrder
         hasCompletedOnboarding = (try? container.decodeIfPresent(Bool.self, forKey: .hasCompletedOnboarding)) ?? false
         defaultAssistant = try? container.decodeIfPresent(CodingAssistant.self, forKey: .defaultAssistant)
         // Assistants written by a newer version of the app (or a future CLI)

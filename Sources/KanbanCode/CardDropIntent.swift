@@ -44,7 +44,7 @@ enum CardDropIntent: Equatable {
         case .allSessions:
             return .archive
 
-        case .backlog, .waiting:
+        case .backlog, .waiting, .onHold:
             return .move
         }
     }

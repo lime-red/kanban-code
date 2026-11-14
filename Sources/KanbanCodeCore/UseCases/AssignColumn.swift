@@ -21,12 +21,17 @@ public enum AssignColumn {
             return .allSessions
         }
 
-        // Manual backlog override is sticky: the card was parked, or brought
-        // back from the archive. Resume/launch (which clear the override)
-        // move it out, and so does a turn running in the card's own live
-        // session: the card is being worked on, from its terminal. Trailing
-        // activity alone does not count: archiving or stopping kills the
-        // session while its transcript still reads as fresh for minutes.
+        // Manual On Hold override is unconditionally sticky: the user explicitly
+        // paused this card until they choose to resume, start, or move it.
+        if link.manualOverrides.column && link.column == .onHold {
+            return .onHold
+        }
+
+        // Manual backlog override is sticky: the card was parked. Resume/launch
+        // (which clear the override) move it out, and so does a turn running in
+        // the card's own live session. Trailing activity alone does not count:
+        // archiving or stopping kills the session while its transcript still
+        // reads as fresh for minutes.
         if link.manualOverrides.column && link.column == .backlog
             && !(hasLiveSession && activityState == .activelyWorking) {
             return .backlog

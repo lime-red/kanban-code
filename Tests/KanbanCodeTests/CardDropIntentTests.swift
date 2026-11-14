@@ -71,4 +71,19 @@ struct CardDropIntentTests {
 
         #expect(CardDropIntent.resolve(card, to: .backlog) == .move)
     }
+
+    @Test("Cards can be dropped into On Hold")
+    func cardMovesToOnHold() {
+        let card = KanbanCodeCard(
+            link: Link(
+                id: "card_waiting",
+                name: "Gitea upgrade o/h 22/11",
+                projectPath: "/test/project",
+                column: .waiting,
+                source: .manual
+            )
+        )
+
+        #expect(CardDropIntent.resolve(card, to: .onHold) == .move)
+    }
 }

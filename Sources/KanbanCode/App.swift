@@ -780,6 +780,7 @@ extension Notification.Name {
     static let chatCardExpanded = Notification.Name("chatCardExpanded")
     static let chatComposerRefocus = Notification.Name("chatComposerRefocus")
     static let kanbanCodeAddLink = Notification.Name("kanbanCodeAddLink")
+    static let kanbanCodeEditOnHoldDate = Notification.Name("kanbanCodeEditOnHoldDate")
     static let kanbanCodeOpenProject = Notification.Name("kanbanCodeOpenProject")
     static let kanbanCodeCLICommand = Notification.Name("kanbanCodeCLICommand")
     static let browserFocusAddressBar = Notification.Name("browserFocusAddressBar")

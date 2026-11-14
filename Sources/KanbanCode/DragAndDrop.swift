@@ -191,6 +191,13 @@ struct DroppableColumnView: View {
 
                 Spacer()
 
+                if column == .onHold && cards.contains(where: \.link.isOnHoldReady) {
+                    Image(systemName: "bell.badge.fill")
+                        .font(.app(.caption))
+                        .foregroundStyle(.orange)
+                        .help("One or more On Hold cards have reached their ready date")
+                }
+
                 if let onRefreshBacklog {
                     Button {
                         onRefreshBacklog()

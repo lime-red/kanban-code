@@ -295,4 +295,51 @@ struct AssignColumnTests {
         let col = AssignColumn.assign(link: link, hasWorktree: true)
         #expect(col == .waiting, "Fork with worktree but no activity should still be Waiting")
     }
+
+    // MARK: - On Hold column & date parsing
+
+    @Test("Manual On Hold stays sticky even when the card's live session reports activity")
+    func onHoldPlacementIsSticky() {
+        var link = Link(
+            column: .onHold,
+            lastActivity: Date.now.addingTimeInterval(-90000),
+            sessionLink: SessionLink(sessionId: "s1")
+        )
+        link.manualOverrides.column = true
+
+        #expect(AssignColumn.assign(link: link, activityState: .stale, hasLiveSession: false) == .onHold)
+        #expect(AssignColumn.assign(link: link, activityState: .idleWaiting, hasLiveSession: true) == .onHold)
+        #expect(AssignColumn.assign(link: link, activityState: .activelyWorking, hasLiveSession: false) == .onHold)
+        #expect(AssignColumn.assign(link: link, activityState: .activelyWorking, hasLiveSession: true) == .onHold)
+    }
+
+    @Test("OnHoldDateParser parses dd/MM titles like Gitea upgrade o/h 22/11")
+    func onHoldDateParserParsesDayMonth() {
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        let now = utc.date(from: DateComponents(year: 2026, month: 11, day: 14, hour: 12))!
+
+        let parsed = OnHoldDateParser.parseDate(
+            from: "Gitea upgrade o/h 22/11",
+            now: now,
+            calendar: utc
+        )
+        let expected = utc.date(from: DateComponents(year: 2026, month: 11, day: 22))!
+        #expect(parsed == expected)
+    }
+
+    @Test("Link.isOnHoldReady becomes true when column is onHold and date is reached")
+    func linkIsOnHoldReady() {
+        let future = Date.now.addingTimeInterval(3600 * 24)
+        let past = Date.now.addingTimeInterval(-60)
+
+        let notReadyYet = Link(column: .onHold, onHoldUntil: future)
+        #expect(notReadyYet.isOnHoldReady == false)
+
+        let readyNow = Link(column: .onHold, onHoldUntil: past)
+        #expect(readyNow.isOnHoldReady == true)
+
+        let wrongColumn = Link(column: .waiting, onHoldUntil: past)
+        #expect(wrongColumn.isOnHoldReady == false)
+    }
 }

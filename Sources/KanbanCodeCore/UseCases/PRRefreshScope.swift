@@ -37,7 +37,7 @@ public enum PRRefreshScope {
     /// Columns whose cards still get branch → PR discovery. Backlog cards have
     /// no PRs yet and archived cards get no new ones.
     private static let activeColumns: Set<KanbanCodeColumn> = [
-        .inProgress, .waiting, .inReview, .done,
+        .inProgress, .waiting, .onHold, .inReview, .done,
     ]
 
     public static func collect(links: [Link]) -> Scope {

@@ -631,11 +631,11 @@ public final class AppState: @unchecked Sendable {
         // Per-column sorted arrays. Indices are sorted, not the cards: a
         // card is a large value and a sort moves each one many times.
         var indicesByColumn: [KanbanCodeColumn: [Int]] = [:]
-        var sortKeys: [(order: Int?, time: Date, id: String)] = []
+        var sortKeys: [(order: Int?, onHoldReady: Bool, time: Date, id: String)] = []
         sortKeys.reserveCapacity(newFiltered.count)
         for i in newFiltered.indices {
             let link = newFiltered[i].link
-            sortKeys.append((link.sortOrder, link.lastActivity ?? link.updatedAt, link.id))
+            sortKeys.append((link.sortOrder, link.isOnHoldReady, link.lastActivity ?? link.updatedAt, link.id))
             if link.parentCardId == nil { indicesByColumn[link.column, default: []].append(i) }
         }
         var newByColumn: [KanbanCodeColumn: [KanbanCodeCard]] = [:]
@@ -644,18 +644,24 @@ public final class AppState: @unchecked Sendable {
                 let a = sortKeys[i], b = sortKeys[j]
                 switch (a.order, b.order) {
                 case (let x?, let y?): return x < y
-                case (_?, nil): return true
-                case (nil, _?): return false
-                case (nil, nil):
-                    if a.time != b.time { return a.time > b.time }
-                    return a.id < b.id
+                default:
+                    if column == .onHold, a.onHoldReady != b.onHoldReady {
+                        return a.onHoldReady
+                    }
+                    switch (a.order, b.order) {
+                    case (_?, nil): return true
+                    case (nil, _?): return false
+                    default:
+                        if a.time != b.time { return a.time > b.time }
+                        return a.id < b.id
+                    }
                 }
             }
             newByColumn[column] = sorted.map { newFiltered[$0] }
         }
         if newByColumn != cardsByColumn { cardsByColumn = newByColumn }
 
-        let alwaysVisible: [KanbanCodeColumn] = [.backlog, .inProgress, .waiting, .inReview, .done]
+        let alwaysVisible: [KanbanCodeColumn] = [.backlog, .inProgress, .waiting, .onHold, .inReview, .done]
         var newVisible = alwaysVisible
         if (newByColumn[.allSessions]?.count ?? 0) > 0 { newVisible.append(.allSessions) }
         if newVisible != visibleColumns { visibleColumns = newVisible }
@@ -750,6 +756,7 @@ public enum Action: Sendable {
     case launchCard(cardId: String, prompt: String, projectPath: String, worktreeName: String?, runRemotely: Bool, commandOverride: String?)
     case resumeCard(cardId: String)
     case moveCard(cardId: String, to: KanbanCodeColumn)
+    case setCardOnHoldDate(cardId: String, date: Date?)
     case renameCard(cardId: String, name: String)
     case setCardPinned(cardId: String, isPinned: Bool)
     case setSelfCompactContextThreshold(cardId: String, thresholdTokens: Int?)
@@ -1061,6 +1068,7 @@ public enum Effect: Sendable {
     case sendDMToDisk(from: ChannelParticipant, to: ChannelParticipant, body: String, imagePaths: [String], toTarget: ChannelMemberTarget?)
     case notifyDMReceived(fromHandle: String, body: String)
     case notifyChannelMessage(channel: String, fromHandle: String, body: String)
+    case notifyOnHoldReady(cardId: String, cardTitle: String)
     case deleteChannelOnDisk(name: String)
     case renameChannelOnDisk(old: String, new: String)
     case leaveChannelOnDisk(name: String, member: ChannelParticipant)
@@ -1257,6 +1265,8 @@ public enum Reducer {
             link.tmuxLink = TmuxLink(sessionName: tmuxName, extraSessions: extras.isEmpty ? nil : extras)
             link.column = .inProgress
             link.manualOverrides.column = false // Let automatic assignment take over
+            link.onHoldUntil = nil
+            link.onHoldNotifiedAt = nil
             link.isLaunching = true
             link.launchedAt = .now
             link.updatedAt = .now
@@ -1278,6 +1288,8 @@ public enum Reducer {
             link.tmuxLink = TmuxLink(sessionName: tmuxName, extraSessions: extras.isEmpty ? nil : extras)
             link.column = .inProgress
             link.manualOverrides.column = false // Let automatic assignment take over
+            link.onHoldUntil = nil
+            link.onHoldNotifiedAt = nil
             link.isLaunching = true
             link.launchedAt = .now
             link.updatedAt = .now
@@ -1292,6 +1304,15 @@ public enum Reducer {
             link.sortOrder = nil
             link.column = column
             link.manualOverrides.column = true
+            if column == .onHold {
+                if link.onHoldUntil == nil {
+                    link.onHoldUntil = OnHoldDateParser.parseDate(from: link.displayTitle)
+                }
+                link.onHoldNotifiedAt = nil
+            } else {
+                link.onHoldUntil = nil
+                link.onHoldNotifiedAt = nil
+            }
             if column == .allSessions {
                 link.manuallyArchived = true
                 link.pinnedAt = nil
@@ -1299,6 +1320,21 @@ public enum Reducer {
             } else {
                 link.manuallyArchived = false
                 // The user put a headless session's card on the board: it stays.
+                if link.headless == true { link.headless = false }
+            }
+            link.updatedAt = .now
+            state.links[cardId] = link
+            return [.upsertLink(link)]
+
+        case .setCardOnHoldDate(let cardId, let date):
+            guard var link = state.links[cardId] else { return [] }
+            link.onHoldUntil = date
+            link.onHoldNotifiedAt = nil
+            if date != nil && link.column != .onHold {
+                link.sortOrder = nil
+                link.column = .onHold
+                link.manualOverrides.column = true
+                link.manuallyArchived = false
                 if link.headless == true { link.headless = false }
             }
             link.updatedAt = .now
@@ -2849,6 +2885,9 @@ public enum Reducer {
             let liveTmuxNames = result.tmuxSessions
             deduplicatePrimaryTmuxLinks(&mergedLinks, liveTmuxNames: liveTmuxNames)
 
+            var readyNotifications: [Effect] = []
+            var firstReadyTitle: String?
+
             for (id, var link) in mergedLinks
             where link.isLaunching != true && !preservedIds.contains(id) && state.isOwnedLocally(link) {
                 let activity = result.activityMap[link.sessionLink?.sessionId ?? ""]
@@ -2860,14 +2899,16 @@ public enum Reducer {
                 let hasWorktree = link.worktreeLink?.branch != nil
 
                 // Clear manual column override when we have definitive data.
-                // Backlog is sticky — the user explicitly parked this card.
-                if link.manualOverrides.column && link.column != .backlog {
+                // Backlog and On Hold are sticky — the user explicitly parked or paused this card.
+                if link.manualOverrides.column && link.column != .backlog && link.column != .onHold {
                     if activity != nil && activity != .stale {
                         link.manualOverrides.column = false
                     } else if link.tmuxLink != nil && !hasTmux {
                         link.tmuxLink = nil
                         link.manualOverrides.column = false
                     }
+                } else if link.column == .onHold, link.tmuxLink != nil, !hasTmux {
+                    link.tmuxLink = nil
                 }
 
                 UpdateCardColumn.update(
@@ -2885,7 +2926,22 @@ public enum Reducer {
                     link.promptBody = firstPrompt
                 }
 
+                if link.isOnHoldReady && link.onHoldNotifiedAt == nil {
+                    link.onHoldNotifiedAt = .now
+                    link.updatedAt = .now
+                    let title = link.displayTitle
+                    firstReadyTitle = firstReadyTitle ?? title
+                    readyNotifications.append(.notifyOnHoldReady(cardId: id, cardTitle: title))
+                }
+
                 mergedLinks[id] = link
+            }
+
+            if let firstReadyTitle {
+                let message = readyNotifications.count == 1
+                    ? "⏰ \"\(firstReadyTitle)\" is ready to go again!"
+                    : "⏰ \(readyNotifications.count) On Hold cards are ready to go again!"
+                state.notice = Notice(message, kind: .warning)
             }
 
             let linksChanged = state.links != mergedLinks
@@ -2902,7 +2958,9 @@ public enum Reducer {
             }
 
 
-            return linksChanged ? [.persistLinks(Array(mergedLinks.values))] : []
+            var effects: [Effect] = linksChanged ? [.persistLinks(Array(mergedLinks.values))] : []
+            effects.append(contentsOf: readyNotifications)
+            return effects
 
         case .gitHubIssuesUpdated(let updatedLinks):
             let updatedIds = Set(updatedLinks.map(\.id))
