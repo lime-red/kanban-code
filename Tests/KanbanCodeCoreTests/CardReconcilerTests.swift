@@ -1623,4 +1623,48 @@ struct WorktreeRootTests {
         #expect(result["card_neighbour"]?.tmuxLink == nil)
         #expect(result["card_orphan"]?.tmuxLink?.sessionName == "rush-abcdef01")
     }
+
+    @Test("Newer session in primary tmux replaces ended/older session and skips Backlog cards")
+    func newerPrimarySessionReplacesOlderAndSkipsBacklog() {
+        let now = Date()
+        let backlogCard = Link(
+            id: "card_backlog",
+            name: "Parked task",
+            projectPath: "/project",
+            column: .backlog,
+            lastActivity: now.addingTimeInterval(-3600),
+            source: .manual,
+            sessionLink: SessionLink(sessionId: "s-parked", sessionPath: "/p/s-parked.jsonl"),
+            tmuxLink: TmuxLink(sessionName: "proj-parked"),
+            launchedAt: now.addingTimeInterval(-7200)
+        )
+        let activeCard = Link(
+            id: "card_active",
+            name: "Active task",
+            projectPath: "/project",
+            column: .waiting,
+            lastActivity: now.addingTimeInterval(-600),
+            source: .manual,
+            sessionLink: SessionLink(sessionId: "s-old", sessionPath: "/p/s-old.jsonl"),
+            tmuxLink: TmuxLink(sessionName: "claude-sold"),
+            launchedAt: now.addingTimeInterval(-86400)
+        )
+
+        let snapshot = CardReconciler.DiscoverySnapshot(
+            sessions: [
+                Session(id: "s-new", projectPath: "/project", messageCount: 3, modifiedTime: now, jsonlPath: "/p/s-new.jsonl"),
+                Session(id: "s-old", projectPath: "/project", messageCount: 10, modifiedTime: now.addingTimeInterval(-600), jsonlPath: "/p/s-old.jsonl"),
+                Session(id: "s-parked", projectPath: "/project", messageCount: 5, modifiedTime: now.addingTimeInterval(-3600), jsonlPath: "/p/s-parked.jsonl"),
+            ]
+        )
+
+        let result = Dictionary(uniqueKeysWithValues: CardReconciler.reconcile(
+            existing: [backlogCard, activeCard], snapshot: snapshot
+        ).map { ($0.id, $0) })
+
+        #expect(result.count == 2)
+        #expect(result["card_backlog"]?.sessionLink?.sessionId == "s-parked")
+        #expect(result["card_active"]?.sessionLink?.sessionId == "s-new")
+        #expect(result["card_active"]?.lastActivity == now)
+    }
 }
