@@ -39,7 +39,7 @@ jobs:
   swift:
     runs-on: ubuntu-latest
     container: swift:6.2-noble
-    timeout-minutes: 60
+    timeout-minutes: 45
     steps:
       # The swift image has no Node, which actions/checkout needs to run.
       # tmux + git let the real-tmux / real-git tests run for real.
@@ -54,8 +54,17 @@ jobs:
       - name: Build
         run: swift build --build-tests
 
+      # Swift Testing prints each parameterised case's full argument when it
+      # starts, and SecretDetectorTests feeds in inputs tens of kilobytes long.
+      # act_runner reads job output a line at a time and stops at a line over
+      # 64 KB, after which the test process blocks writing and the job hangs
+      # until its timeout. Trimming long lines keeps the log flowing;
+      # pipefail keeps swift test's exit status.
       - name: Test
-        run: swift test --skip-build
+        shell: bash
+        run: |
+          set -o pipefail
+          swift test --skip-build 2>&1 | cut -c1-2000
 
       - name: Build kanban-code-server (release)
         run: swift build -c release --product kanban-code-server --static-swift-stdlib
