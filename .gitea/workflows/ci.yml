@@ -39,16 +39,18 @@ on:
         default: ''
 
 jobs:
+  # Job images come from common/ci-images, rebuilt weekly; Renovate raises a PR
+  # when a newer date tag exists. ci-swift is swift:6.2-noble plus Node (for
+  # actions), tmux and git (for the real-tmux / real-git tests).
   swift:
     runs-on: ubuntu-latest
-    container: swift:6.2-noble
+    container:
+      image: gitea-hl.taild204f.ts.net/common/ci-swift:20261119
+      volumes:
+        # SwiftPM's dependency cache, so packages aren't re-cloned every run.
+        - swiftpm-cache:/root/.cache/org.swift.swiftpm
     timeout-minutes: 40
     steps:
-      # The swift image has no Node, which actions/checkout needs to run.
-      # tmux + git let the real-tmux / real-git tests run for real.
-      - name: Install Node, tmux and git
-        run: apt-get update && apt-get install -y --no-install-recommends nodejs tmux git ca-certificates
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -108,34 +110,28 @@ jobs:
       - name: Build kanban-code-server (release)
         run: swift build -c release --product kanban-code-server --static-swift-stdlib
 
+  # ci-tauri carries Node 24, the WebKitGTK libraries Tauri links against on
+  # Linux, mingw-w64, and Rust stable with the x86_64-pc-windows-gnu target.
   windows:
     runs-on: ubuntu-latest
+    container:
+      image: gitea-hl.taild204f.ts.net/common/ci-tauri:20261119
+      volumes:
+        - npm-cache:/opt/npm-cache
+        # Downloaded crates (never mount over CARGO_HOME, which holds the toolchain).
+        - cargo-registry:/usr/local/cargo/registry
+        # Build caching: compiled dependencies persist between runs, so only
+        # the app crate rebuilds. Cargo locks the directory, so overlapping
+        # runs wait for each other rather than corrupt it.
+        - kanban-code-cargo-target:/opt/cargo-target
+    env:
+      CARGO_TARGET_DIR: /opt/cargo-target
     timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.ref }}
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-
-      # Tauri links against WebKitGTK on Linux even though the app ships for Windows.
-      - name: Install Tauri system libraries
-        run: |
-          SUDO=$(command -v sudo || true)
-          $SUDO apt-get update
-          $SUDO apt-get install -y --no-install-recommends \
-            build-essential pkg-config libssl-dev \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
-            librsvg2-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
-
-      - name: Install Rust
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       # tauri::generate_context! needs ../dist to exist, so build the frontend first.
       - name: Frontend build (tsc && vite build)
@@ -151,22 +147,24 @@ jobs:
       # cargo test above builds for Linux, so the code marked
       # #[cfg(windows)] / #[cfg(target_os = "windows")] is never compiled.
       # Type-checking for a Windows target compiles it without needing
-      # Windows. mingw-w64 supplies the C cross-compiler that ring's build
-      # script needs and the windres that tauri-build uses for resources.
+      # Windows. mingw-w64 (in ci-tauri) supplies the C cross-compiler that
+      # ring's build script needs and the windres that tauri-build uses.
       # Advisory until tauri-build's Windows resource step works on the Linux
       # runner: on 2026-11-19 it failed looking for resource.lib before any of
       # the app's own code was checked.
       - name: Type-check for Windows (advisory, cargo check --target x86_64-pc-windows-gnu)
         continue-on-error: true
         working-directory: windows/src-tauri
-        run: |
-          SUDO=$(command -v sudo || true)
-          $SUDO apt-get install -y --no-install-recommends mingw-w64
-          rustup target add x86_64-pc-windows-gnu
-          cargo check --target x86_64-pc-windows-gnu --all-targets
+        run: cargo check --target x86_64-pc-windows-gnu --all-targets
 
+  # ci-base: Ubuntu 24.04 with Node 24, tmux and git.
   cli:
     runs-on: ubuntu-latest
+    container:
+      image: gitea-hl.taild204f.ts.net/common/ci-base:20261119
+      volumes:
+        - npm-cache:/opt/npm-cache
+        - pnpm-store:/opt/pnpm-store
     timeout-minutes: 20
     defaults:
       run:
@@ -176,18 +174,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.ref }}
-
-      - name: Install tmux
-        run: |
-          SUDO=$(command -v sudo || true)
-          $SUDO apt-get update && $SUDO apt-get install -y --no-install-recommends tmux
-
-      # No setup-node cache: the runner's cache server is unreachable from job
-      # containers (see lime/agentfield-fork's CI).
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
 
       - name: Install pnpm and dependencies
         run: |
