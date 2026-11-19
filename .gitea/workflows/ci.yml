@@ -39,7 +39,7 @@ jobs:
   swift:
     runs-on: ubuntu-latest
     container: swift:6.2-noble
-    timeout-minutes: 45
+    timeout-minutes: 40
     steps:
       # The swift image has no Node, which actions/checkout needs to run.
       # tmux + git let the real-tmux / real-git tests run for real.
@@ -61,17 +61,40 @@ jobs:
       # limit, the log names any test that hangs, and the build steps above
       # and below stay the real check.
       #
-      # Swift Testing prints each parameterised case's full argument, and
-      # SecretDetectorTests feeds in inputs over 64 KB; act_runner stops reading
-      # output at a line that long, so lines are trimmed. pipefail keeps the
-      # test exit status (124 means the time limit was hit).
-      - name: Test (advisory, serial, 20 min limit)
+      # A watchdog fails the step after 3 minutes without output, printing the
+      # last lines so the log names the test that hung, instead of the job
+      # sitting silent until its timeout. It's inline rather than a script
+      # file because a manual run checks out a fix branch, which doesn't carry
+      # .gitea/. Lines are trimmed: Swift Testing prints each parameterised
+      # case's argument, SecretDetectorTests passes inputs over 64 KB, and
+      # act_runner stops reading job output at a line that long.
+      - name: Test (advisory, serial, watchdog)
         continue-on-error: true
         shell: bash
         run: |
-          set -o pipefail
           echo "CPUs: $(nproc)"
-          timeout -k 30s 20m swift test --skip-build --no-parallel 2>&1 | cut -c1-2000
+          idle_limit=180
+          log=$(mktemp)
+          swift test --skip-build --no-parallel >"$log" 2>&1 &
+          pid=$!
+          tail -n +1 -f "$log" | while IFS= read -r line; do printf '%s\n' "${line:0:2000}"; done &
+          tailer=$!
+          last_size=-1; idle=0
+          while kill -0 "$pid" 2>/dev/null; do
+            sleep 10
+            size=$(stat -c %s "$log")
+            if [ "$size" = "$last_size" ]; then idle=$((idle + 10)); else idle=0; last_size=$size; fi
+            if [ "$idle" -ge "$idle_limit" ]; then
+              sleep 1; kill "$tailer" 2>/dev/null
+              echo "::error::watchdog: no test output for ${idle_limit}s, so the suite looks hung. Last lines:"
+              tail -n 15 "$log" | cut -c1-2000
+              kill -TERM "$pid" 2>/dev/null; sleep 10; kill -KILL "$pid" 2>/dev/null
+              exit 124
+            fi
+          done
+          wait "$pid"; status=$?
+          sleep 1; kill "$tailer" 2>/dev/null
+          exit "$status"
 
       - name: Build kanban-code-server (release)
         run: swift build -c release --product kanban-code-server --static-swift-stdlib
@@ -115,6 +138,19 @@ jobs:
       - name: cargo test
         working-directory: windows/src-tauri
         run: cargo test
+
+      # cargo test above builds for Linux, so the code marked
+      # #[cfg(windows)] / #[cfg(target_os = "windows")] is never compiled.
+      # Type-checking for a Windows target compiles it without needing
+      # Windows. mingw-w64 supplies the C cross-compiler that ring's build
+      # script needs and the windres that tauri-build uses for resources.
+      - name: Type-check for Windows (cargo check --target x86_64-pc-windows-gnu)
+        working-directory: windows/src-tauri
+        run: |
+          SUDO=$(command -v sudo || true)
+          $SUDO apt-get install -y --no-install-recommends mingw-w64
+          rustup target add x86_64-pc-windows-gnu
+          cargo check --target x86_64-pc-windows-gnu --all-targets
 
   cli:
     runs-on: ubuntu-latest
