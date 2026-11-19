@@ -75,7 +75,9 @@ jobs:
           echo "CPUs: $(nproc)"
           idle_limit=180
           log=$(mktemp)
-          swift test --skip-build --no-parallel >"$log" 2>&1 &
+          # stdbuf: written to a file, test output is block-buffered, so the
+          # last lines the watchdog shows would lag the test that actually hung.
+          stdbuf -oL -eL swift test --skip-build --no-parallel >"$log" 2>&1 &
           pid=$!
           tail -n +1 -f "$log" | while IFS= read -r line; do printf '%s\n' "${line:0:2000}"; done &
           tailer=$!
@@ -144,7 +146,11 @@ jobs:
       # Type-checking for a Windows target compiles it without needing
       # Windows. mingw-w64 supplies the C cross-compiler that ring's build
       # script needs and the windres that tauri-build uses for resources.
-      - name: Type-check for Windows (cargo check --target x86_64-pc-windows-gnu)
+      # Advisory until tauri-build's Windows resource step works on the Linux
+      # runner: on 2026-11-19 it failed looking for resource.lib before any of
+      # the app's own code was checked.
+      - name: Type-check for Windows (advisory, cargo check --target x86_64-pc-windows-gnu)
+        continue-on-error: true
         working-directory: windows/src-tauri
         run: |
           SUDO=$(command -v sudo || true)
