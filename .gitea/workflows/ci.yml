@@ -48,6 +48,8 @@ jobs:
       image: gitea-hl.taild204f.ts.net/common/ci-swift:20261119
       volumes:
         # SwiftPM's dependency cache, so packages aren't re-cloned every run.
+        # Needs adding to the runner's valid_volumes; until then act_runner
+        # ignores it with a warning and the job runs uncached.
         - swiftpm-cache:/root/.cache/org.swift.swiftpm
     timeout-minutes: 40
     steps:
@@ -122,7 +124,8 @@ jobs:
         - cargo-registry:/usr/local/cargo/registry
         # Build caching: compiled dependencies persist between runs, so only
         # the app crate rebuilds. Cargo locks the directory, so overlapping
-        # runs wait for each other rather than corrupt it.
+        # runs wait for each other rather than corrupt it. Like swiftpm-cache,
+        # it needs adding to the runner's valid_volumes before it takes effect.
         - kanban-code-cargo-target:/opt/cargo-target
     env:
       CARGO_TARGET_DIR: /opt/cargo-target
@@ -176,9 +179,9 @@ jobs:
           ref: ${{ github.event.inputs.ref }}
 
       - name: Install pnpm and dependencies
-        run: |
-          npm install -g pnpm@10.30.3
-          pnpm install --frozen-lockfile
+        # ci-base enables corepack, which runs the pnpm version cli/package.json
+        # pins in packageManager; installing pnpm with npm collides with its shim.
+        run: pnpm install --frozen-lockfile
 
       - name: Typecheck / build
         run: pnpm run build
