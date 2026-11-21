@@ -1338,6 +1338,9 @@ export default function CardDetailView() {
               : buildInnerCmdShellCmd(projectPath, sessionId ?? null, f.prompt, f.dangerouslySkipPermissions, f.envPrefix)
           }
           onLaunch={(flags) => {
+            // Re-saving the runtime stamps the card as just launched, which
+            // opens the reconciler's window for linking its first session.
+            if (cardRuntime) void pickCardRuntime(cardRuntime);
             setLaunchFlags(flags);
             setShowLaunchDialog(false);
             setTerminalActive(true);

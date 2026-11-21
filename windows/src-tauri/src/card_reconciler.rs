@@ -211,6 +211,17 @@ pub fn reconcile(existing: Vec<Link>, sessions: Vec<Session>) -> Vec<Link> {
     result
 }
 
+/// How long a launched card waits for its first session (Rule 3).
+const PENDING_LAUNCH_WINDOW_MINUTES: i64 = 30;
+
+/// The session was last written between shortly before the card's latest
+/// launch and the end of its wait window.
+fn started_within_launch_window(session: &Session, link: &Link) -> bool {
+    let since_launch = session.modified_time - link.updated_at;
+    since_launch.num_seconds() >= -120
+        && since_launch.num_minutes() <= PENDING_LAUNCH_WINDOW_MINUTES
+}
+
 fn find_card_for_session(
     session: &Session,
     card_id_by_session_id: &HashMap<String, String>,
@@ -255,16 +266,27 @@ fn find_card_for_session(
         }
     }
 
-    // 3. Pending card in same project (session_link is None, e.g. manual/issue
-    //    card whose terminal just started a Claude session without a worktree branch).
+    // 3. Launched card in same project still waiting for its first session
+    //    (e.g. a manual/issue card whose terminal just started Claude without a
+    //    worktree branch). Only cards whose terminal was started count: picking
+    //    a runtime is what launches one, and Windows never sets `is_launching`.
+    //    Without that gate any parked card with no session would absorb the next
+    //    session in its project, including one `/clear` starts in another card.
+    //    The wait is also time-boxed: macOS drops a dead launch when its tmux
+    //    session goes away, but Windows has no such signal, so a launch whose
+    //    Claude never wrote a session (stuck at the trust prompt, drawer
+    //    closed) would otherwise claim a session run by hand days later.
+    //    Launching from the drawer refreshes `updated_at`, which restarts it.
     if session.project_path.is_some() {
         let best_pending = links_by_id
             .values()
             .filter(|l| {
                 !l.manually_archived
                     && l.session_link.is_none()
-                    && project_matches(session, l)
-                    && (session.modified_time - l.updated_at).num_seconds() >= -120
+                    && l.card_runtime.is_some()
+                    && l.column != "on_hold"
+                    && same_project(session, l)
+                    && started_within_launch_window(session, l)
             })
             .max_by(|a, b| {
                 let pa = prompt_matches(a, session);
@@ -278,25 +300,24 @@ fn find_card_for_session(
         }
     }
 
-    // 4. Active card in same project whose existing session is replaced by a
-    //    newer session (e.g. `/clear` or restarting Claude in the card's terminal).
-    //    Skip parked/held/archive/done cards so inactive cards don't absorb live work,
-    //    and require the incoming session to be strictly newer than the card's activity.
+    // 4. Launched, active card in the same project that already has a session
+    //    (e.g. `/clear` or restarting Claude in the card's terminal). The caller
+    //    makes the new session primary only when it is newer; an older one, such
+    //    as the conversation `/clear` just replaced, stays with the card instead
+    //    of turning up as a card of its own (as on macOS). Parked, held, archived
+    //    and done cards never absorb live work.
     if session.project_path.is_some() {
         let best_active = links_by_id
             .values()
             .filter(|l| {
                 !l.manually_archived
                     && l.session_link.is_some()
+                    && l.card_runtime.is_some()
                     && l.column != "backlog"
                     && l.column != "on_hold"
                     && l.column != "all_sessions"
                     && l.column != "done"
-                    && project_matches(session, l)
-            })
-            .filter(|l| {
-                let card_time = l.last_activity.unwrap_or(l.updated_at);
-                (session.modified_time - card_time).num_milliseconds() > 1000
+                    && same_project(session, l)
             })
             .max_by(|a, b| {
                 let ta = a.last_activity.unwrap_or(a.updated_at);
@@ -344,6 +365,22 @@ fn project_matches(session: &Session, link: &Link) -> bool {
     let link_path = link_path.replace('\\', "/");
     let link_path = link_path.trim_end_matches('/');
     session_path == link_path || session_path.starts_with(&format!("{}/", link_path))
+}
+
+/// Stricter than `project_matches`, for the rules that match on project
+/// alone: the session must run in the card's own folder or in one of its
+/// `.claude/worktrees/` folders (as macOS's `isWorktreeUnder`). Any deeper
+/// folder would let a card for a parent folder, such as the home folder,
+/// absorb every session beneath it. Both paths must be known. Windows paths
+/// compare without regard to case.
+fn same_project(session: &Session, link: &Link) -> bool {
+    let (Some(session_path), Some(link_path)) = (&session.project_path, &link.project_path) else {
+        return false;
+    };
+    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_ascii_lowercase();
+    let (session_path, link_path) = (norm(session_path), norm(link_path));
+    session_path == link_path
+        || session_path.starts_with(&format!("{link_path}/.claude/worktrees/"))
 }
 
 fn strip_refs_heads(branch: &str) -> &str {
@@ -402,6 +439,7 @@ fn new_discovered_link(session: &Session) -> Link {
 #[cfg(test)]
 mod project_match_tests {
     use super::*;
+    use crate::settings_store::CardRuntime;
 
     fn session(path: &str) -> Session {
         Session {
@@ -443,6 +481,7 @@ mod project_match_tests {
         let mut existing = link(r"C:\repo");
         existing.id = "card-1".into();
         existing.column = "requires_attention".into();
+        existing.card_runtime = Some(CardRuntime::Windows);
         existing.last_activity = Some(t1);
         existing.session_link = Some(SessionLink {
             session_id: "old-sess".into(),
@@ -513,6 +552,7 @@ mod project_match_tests {
         pending.column = "backlog".into();
         pending.session_link = None;
         pending.prompt_body = Some("Implement on hold column".into());
+        pending.card_runtime = Some(CardRuntime::Windows);
         pending.updated_at = now - chrono::Duration::seconds(30);
 
         let mut sess = session(r"C:\repo");
@@ -529,6 +569,164 @@ mod project_match_tests {
             linked.session_link.as_ref().map(|s| s.session_id.as_str()),
             Some("fresh-sess")
         );
+    }
+
+    /// Found on the Windows test VM: `/clear` in a running card's terminal
+    /// starts a new session, and it went to an unlaunched On Hold card in the
+    /// same project instead of replacing the running card's session.
+    #[test]
+    fn clear_replaces_running_card_session_instead_of_filling_unlaunched_cards() {
+        let now = chrono::Utc::now();
+
+        let mut running = link(r"C:\repo");
+        running.id = "card-running".into();
+        running.source = "manual".into();
+        running.column = "requires_attention".into();
+        running.card_runtime = Some(CardRuntime::Windows);
+        running.last_activity = Some(now - chrono::Duration::minutes(2));
+        running.session_link = Some(SessionLink {
+            session_id: "before-clear".into(),
+            session_path: Some(r"C:\before.jsonl".into()),
+            session_number: None,
+        });
+
+        let mut cards = vec![running];
+        for col in ["on_hold", "backlog"] {
+            let mut parked = link(r"C:\repo");
+            parked.id = format!("card-{col}");
+            parked.source = "manual".into();
+            parked.column = col.into();
+            parked.session_link = None;
+            parked.updated_at = now - chrono::Duration::seconds(30);
+            cards.push(parked);
+        }
+
+        let mut after_clear = session(r"C:\repo");
+        after_clear.id = "after-clear".into();
+        after_clear.modified_time = now;
+        after_clear.jsonl_path = Some(r"C:\after.jsonl".into());
+
+        let result = reconcile(cards, vec![after_clear]);
+        let sid = |id: &str| {
+            result
+                .iter()
+                .find(|c| c.id == id)
+                .and_then(|c| c.session_link.as_ref())
+                .map(|s| s.session_id.clone())
+        };
+        assert_eq!(sid("card-running").as_deref(), Some("after-clear"));
+        assert_eq!(sid("card-on_hold"), None);
+        assert_eq!(sid("card-backlog"), None);
+        assert_eq!(result.len(), 3, "no extra card for the replacement session");
+    }
+
+    /// After `/clear` the card's previous conversation is no longer its
+    /// primary session. It stays with the card rather than becoming a card
+    /// of its own or being taken by another card.
+    #[test]
+    fn conversation_replaced_by_clear_stays_with_its_card() {
+        let now = chrono::Utc::now();
+        let mut running = link(r"C:\repo");
+        running.id = "card-running".into();
+        running.column = "requires_attention".into();
+        running.card_runtime = Some(CardRuntime::Windows);
+        running.last_activity = Some(now);
+        running.session_link = Some(SessionLink {
+            session_id: "after-clear".into(),
+            session_path: Some(r"C:\after.jsonl".into()),
+            session_number: None,
+        });
+
+        let mut current = session(r"C:\repo");
+        current.id = "after-clear".into();
+        current.modified_time = now;
+        let mut before = session(r"C:\repo");
+        before.id = "before-clear".into();
+        before.modified_time = now - chrono::Duration::minutes(5);
+
+        let result = reconcile(vec![running], vec![before, current]);
+        assert_eq!(result.len(), 1, "no separate card for the replaced conversation");
+        assert_eq!(
+            result[0].session_link.as_ref().map(|s| s.session_id.as_str()),
+            Some("after-clear")
+        );
+    }
+
+    /// Found on the Windows test VM: a card for `C:\Users\dev` (from running
+    /// Claude in the home folder) took a session from a project beneath it.
+    #[test]
+    fn parent_folder_card_does_not_absorb_sessions_from_subfolders() {
+        let now = chrono::Utc::now();
+        let mut home = link(r"C:\Users\dev");
+        home.id = "card-home".into();
+        home.column = "requires_attention".into();
+        home.card_runtime = Some(CardRuntime::Windows);
+        home.last_activity = Some(now - chrono::Duration::hours(1));
+        home.session_link = Some(SessionLink {
+            session_id: "home-sess".into(),
+            session_path: None,
+            session_number: None,
+        });
+
+        let mut project_sess = session(r"C:\Users\dev\code\kc_test space");
+        project_sess.id = "project-sess".into();
+        project_sess.modified_time = now;
+
+        let result = reconcile(vec![home], vec![project_sess]);
+        assert_eq!(result.len(), 2);
+        let home = result.iter().find(|c| c.id == "card-home").unwrap();
+        assert_eq!(home.session_link.as_ref().map(|s| s.session_id.as_str()), Some("home-sess"));
+    }
+
+    #[test]
+    fn same_project_allows_only_the_folder_and_its_worktrees() {
+        assert!(same_project(&session(r"C:\repo"), &link(r"C:\Repo\")));
+        assert!(same_project(&session(r"C:\repo\.claude\worktrees\feat"), &link(r"C:\repo")));
+        assert!(!same_project(&session(r"C:\repo\sub"), &link(r"C:\repo")));
+        assert!(!same_project(&session(r"C:\repo-two"), &link(r"C:\repo")));
+        let mut unknown = link(r"C:\repo");
+        unknown.project_path = None;
+        assert!(!same_project(&session(r"C:\repo"), &unknown));
+    }
+
+    #[test]
+    fn launched_card_on_hold_does_not_take_new_session() {
+        let now = chrono::Utc::now();
+        let mut held = link(r"C:\repo");
+        held.id = "card-held".into();
+        held.column = "on_hold".into();
+        held.card_runtime = Some(CardRuntime::Windows);
+        held.session_link = None;
+        held.updated_at = now - chrono::Duration::seconds(30);
+
+        let mut sess = session(r"C:\repo");
+        sess.id = "manual-sess".into();
+        sess.modified_time = now;
+
+        let result = reconcile(vec![held], vec![sess]);
+        assert_eq!(result.len(), 2);
+        let held = result.iter().find(|c| c.id == "card-held").unwrap();
+        assert!(held.session_link.is_none());
+    }
+
+    #[test]
+    fn stale_launch_does_not_take_a_much_later_session() {
+        let now = chrono::Utc::now();
+        let mut stale = link(r"C:\repo");
+        stale.id = "card-stale".into();
+        stale.column = "in_progress".into();
+        stale.card_runtime = Some(CardRuntime::Windows);
+        stale.session_link = None;
+        stale.updated_at = now - chrono::Duration::days(2);
+
+        let mut sess = session(r"C:\repo");
+        sess.id = "manual-sess".into();
+        sess.modified_time = now;
+
+        let result = reconcile(vec![stale], vec![sess]);
+        assert_eq!(result.len(), 2);
+        let stale = result.iter().find(|c| c.id == "card-stale").unwrap();
+        assert!(stale.session_link.is_none());
     }
 
     #[test]
