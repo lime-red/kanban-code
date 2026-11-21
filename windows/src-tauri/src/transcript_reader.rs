@@ -1,6 +1,8 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::jsonl_parser;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,13 +61,8 @@ pub async fn read_transcript(file_path: &str, offset: usize) -> Result<Transcrip
             Err(_) => continue,
         };
 
-        let msg_type = obj["type"].as_str().unwrap_or("");
-        if msg_type != "user" && msg_type != "assistant" {
-            continue;
-        }
-
+        let Some((role, content_blocks)) = turn_parts(&obj) else { continue };
         let timestamp = obj["timestamp"].as_str().map(|s| s.to_string());
-        let content_blocks = parse_content_blocks(&obj);
         let text_preview: String = content_blocks
             .iter()
             .filter(|b| b.kind == "text")
@@ -78,7 +75,7 @@ pub async fn read_transcript(file_path: &str, offset: usize) -> Result<Transcrip
 
         all_turns.push(Turn {
             index: turn_index,
-            role: msg_type.to_string(),
+            role,
             text_preview,
             timestamp,
             content_blocks,
@@ -126,12 +123,7 @@ pub async fn search_transcript_turns(file_path: &str, query: &str) -> Result<Vec
             Err(_) => continue,
         };
 
-        let msg_type = obj["type"].as_str().unwrap_or("");
-        if msg_type != "user" && msg_type != "assistant" {
-            continue;
-        }
-
-        let blocks = parse_content_blocks(&obj);
+        let Some((_, blocks)) = turn_parts(&obj) else { continue };
         let has_match = blocks.iter().any(|b| b.text.to_lowercase().contains(&q));
 
         if has_match {
@@ -185,6 +177,34 @@ pub async fn read_last_assistant_message(file_path: &str, max_chars: usize) -> O
         }
         out
     })
+}
+
+/// The role and blocks a JSONL line shows as in History, or None for lines
+/// that are not a turn. Claude Code records local slash commands as user
+/// messages wrapped in metadata tags: the `isMeta` caveat is hidden, the
+/// command reads as `/clear`, and its output reads as a reply.
+fn turn_parts(obj: &Value) -> Option<(String, Vec<ContentBlock>)> {
+    let msg_type = obj["type"].as_str().unwrap_or("");
+    if msg_type == "assistant" {
+        return Some((msg_type.to_string(), parse_content_blocks(obj)));
+    }
+    if msg_type != "user" || obj["isMeta"].as_bool() == Some(true) {
+        return None;
+    }
+    let mut blocks = parse_content_blocks(obj);
+    let mut role = "user";
+    for block in blocks.iter_mut().filter(|b| b.kind == "text") {
+        if let Some(display) = jsonl_parser::local_command_display(&block.text) {
+            block.text = display;
+        } else if block.text.contains("<local-command-stdout>") {
+            block.text = jsonl_parser::tag_content(&block.text, "local-command-stdout");
+            role = "assistant";
+        }
+    }
+    if role == "assistant" && blocks.iter().all(|b| b.text.is_empty()) {
+        return None; // a command with no output, e.g. `/clear`
+    }
+    Some((role.to_string(), blocks))
 }
 
 fn parse_content_blocks(obj: &Value) -> Vec<ContentBlock> {
@@ -243,4 +263,41 @@ fn parse_content_blocks(obj: &Value) -> Vec<ContentBlock> {
     }
 
     blocks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn turn_of(line: &str) -> Option<(String, Vec<ContentBlock>)> {
+        turn_parts(&serde_json::from_str(line).unwrap())
+    }
+
+    #[test]
+    fn hides_caveat_and_shows_command_name() {
+        assert!(turn_of(r#"{"type":"user","isMeta":true,"message":{"content":"<local-command-caveat>x</local-command-caveat>"}}"#).is_none());
+        let (role, blocks) = turn_of(
+            r#"{"type":"user","message":{"content":"<command-name>/clear</command-name>\n            <command-message>clear</command-message>\n            <command-args></command-args>"}}"#,
+        )
+        .unwrap();
+        assert_eq!(role, "user");
+        assert_eq!(blocks[0].text, "/clear");
+    }
+
+    #[test]
+    fn command_output_reads_as_reply_and_empty_output_is_hidden() {
+        let (role, blocks) = turn_of(r#"{"type":"user","message":{"content":"<local-command-stdout>Catch you later!</local-command-stdout>"}}"#).unwrap();
+        assert_eq!(role, "assistant");
+        assert_eq!(blocks[0].text, "Catch you later!");
+        assert!(turn_of(r#"{"type":"user","message":{"content":"<local-command-stdout></local-command-stdout>"}}"#).is_none());
+    }
+
+    #[test]
+    fn command_args_and_plain_prompts_pass_through() {
+        let (_, blocks) = turn_of(r#"{"type":"user","message":{"content":"<command-name>/model</command-name><command-message>model</command-message><command-args>opus</command-args>"}}"#).unwrap();
+        assert_eq!(blocks[0].text, "/model opus");
+        let (role, blocks) = turn_of(r#"{"type":"user","message":{"content":"Fix the bug"}}"#).unwrap();
+        assert_eq!((role.as_str(), blocks[0].text.as_str()), ("user", "Fix the bug"));
+        assert!(turn_of(r#"{"type":"mode","mode":"default"}"#).is_none());
+    }
 }
