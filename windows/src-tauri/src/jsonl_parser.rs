@@ -66,9 +66,15 @@ pub async fn extract_metadata(file_path: &str) -> Result<Option<SessionMetadata>
             meta.message_count += 1;
         }
 
-        if msg_type == "user" && !found_first_user {
-            found_first_user = true;
-            meta.first_prompt = extract_text_content(&obj);
+        // First real user prompt. Claude Code writes local slash commands
+        // (`/login`, `/clear`) as user messages wrapped in metadata tags,
+        // plus an `isMeta` caveat; none of those is what the user asked.
+        if msg_type == "user" && !found_first_user && !is_metadata_message(&obj) {
+            let text = extract_text_content(&obj).map(|t| strip_metadata_tags(&t).trim().to_string());
+            if text.as_deref() != Some("") {
+                found_first_user = true;
+                meta.first_prompt = text;
+            }
         }
 
         // Early exit once we have enough data
@@ -81,6 +87,74 @@ pub async fn extract_metadata(file_path: &str) -> Result<Option<SessionMetadata>
         return Ok(None);
     }
     Ok(Some(meta))
+}
+
+/// Tags Claude Code wraps around local slash commands and their output.
+const METADATA_TAGS: [&str; 5] = [
+    "local-command-caveat",
+    "command-name",
+    "command-message",
+    "command-args",
+    "local-command-stdout",
+];
+
+/// Remove every metadata tag pair (and its contents) from a message.
+pub fn strip_metadata_tags(text: &str) -> String {
+    let mut out = text.to_string();
+    for tag in METADATA_TAGS {
+        let open = format!("<{tag}>");
+        let close = format!("</{tag}>");
+        while let Some(start) = out.find(&open) {
+            let Some(rel_end) = out[start..].find(&close) else { break };
+            let end = start + rel_end + close.len();
+            out.replace_range(start..end, "");
+        }
+    }
+    out
+}
+
+/// Inner text of the first `<tag>...</tag>` pair, trimmed; empty if absent.
+pub fn tag_content(text: &str, tag: &str) -> String {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let Some(start) = text.find(&open).map(|i| i + open.len()) else { return String::new() };
+    let Some(len) = text[start..].find(&close) else { return String::new() };
+    text[start..start + len].trim().to_string()
+}
+
+/// How a local slash command reads in History: `/clear`, `/review main.rs`,
+/// or the command followed by whatever the user typed alongside it.
+/// None when the text holds no `<command-name>`.
+pub fn local_command_display(text: &str) -> Option<String> {
+    let command = tag_content(text, "command-name");
+    if command.is_empty() {
+        return None;
+    }
+    let args = tag_content(text, "command-args");
+    if !args.is_empty() {
+        return Some(format!("{command} {args}"));
+    }
+    let message = tag_content(text, "command-message");
+    if !message.is_empty() && message != command.trim_start_matches('/') {
+        return Some(format!("{command}\n\n{message}"));
+    }
+    let rest = strip_metadata_tags(text).trim().to_string();
+    if !rest.is_empty() {
+        return Some(format!("{command}\n\n{rest}"));
+    }
+    Some(command)
+}
+
+/// True when a user message is Claude Code bookkeeping rather than a
+/// prompt: an `isMeta` caveat, or text made only of metadata tags.
+pub fn is_metadata_message(obj: &Value) -> bool {
+    if obj["isMeta"].as_bool() == Some(true) {
+        return true;
+    }
+    match extract_text_content(obj) {
+        Some(text) if !text.is_empty() => strip_metadata_tags(&text).trim().is_empty(),
+        _ => false,
+    }
 }
 
 fn extract_text_content(obj: &Value) -> Option<String> {
@@ -269,6 +343,47 @@ mod tests {
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(body.as_bytes()).unwrap();
         path.to_string_lossy().to_string()
+    }
+
+    #[tokio::test]
+    async fn first_prompt_skips_local_command_metadata() {
+        // Shape of a Claude Code 2.1 transcript that opens with `/clear`.
+        let body = [
+            r#"{"type":"user","message":{"role":"user","content":"<local-command-caveat>The command below was run directly in Claude Code, not sent to you as a request.</local-command-caveat>"},"isMeta":true,"cwd":"C:\\Users\\dev\\code\\kc_test space","sessionId":"c1"}"#,
+            r#"{"type":"user","message":{"role":"user","content":"<command-name>/clear</command-name>\n            <command-message>clear</command-message>\n            <command-args></command-args>"},"sessionId":"c1"}"#,
+            r#"{"type":"user","message":{"role":"user","content":"<local-command-stdout></local-command-stdout>"},"sessionId":"c1"}"#,
+            r#"{"type":"user","message":{"role":"user","content":"Reply with only the word \"afterclear\""},"sessionId":"c1"}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"afterclear"}]},"sessionId":"c1"}"#,
+        ]
+        .join("\n")
+            + "\n";
+        let path = write_temp("caveat", &body);
+        let meta = extract_metadata(&path).await.unwrap().unwrap();
+        assert_eq!(meta.first_prompt.as_deref(), Some("Reply with only the word \"afterclear\""));
+        assert_eq!(meta.project_path.as_deref(), Some("C:\\Users\\dev\\code\\kc_test space"));
+    }
+
+    #[tokio::test]
+    async fn first_prompt_none_when_session_only_ran_commands() {
+        let body = [
+            r#"{"type":"user","message":{"content":"<local-command-caveat>caveat</local-command-caveat>"},"isMeta":true}"#,
+            r#"{"type":"user","message":{"content":"<command-name>/exit</command-name>\n<command-message>exit</command-message>\n<command-args></command-args>"}}"#,
+            r#"{"type":"user","message":{"content":"<local-command-stdout>Catch you later!</local-command-stdout>"}}"#,
+        ]
+        .join("\n")
+            + "\n";
+        let path = write_temp("cmdonly", &body);
+        let meta = extract_metadata(&path).await.unwrap().unwrap();
+        assert_eq!(meta.first_prompt, None);
+    }
+
+    #[test]
+    fn strip_metadata_keeps_text_around_tags() {
+        assert_eq!(
+            strip_metadata_tags("<command-name>/review</command-name> please look at main.rs").trim(),
+            "please look at main.rs"
+        );
+        assert_eq!(strip_metadata_tags("<command-name>unclosed"), "<command-name>unclosed");
     }
 
     #[test]
