@@ -85,7 +85,7 @@ async fn move_card(
     card_id: String,
     column: String,
     state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, String> {
     state
         .coordination_store
         .move_card(&card_id, &column)
