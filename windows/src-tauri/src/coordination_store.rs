@@ -522,8 +522,12 @@ impl CoordinationStore {
         self.write_links(&links).await
     }
 
-    pub async fn move_card(&self, card_id: &str, column: &str) -> Result<()> {
+    /// Move a card to `column`. Returns the card's hold date afterwards, which
+    /// moving to On Hold may have just read from the title, so the board can
+    /// show it without waiting for a full refresh.
+    pub async fn move_card(&self, card_id: &str, column: &str) -> Result<Option<DateTime<Utc>>> {
         let mut links = self.read_links().await?;
+        let mut on_hold_until = None;
         if let Some(link) = links.iter_mut().find(|l| l.id == card_id) {
             link.sort_order = None;
             link.column = column.to_string();
@@ -546,8 +550,10 @@ impl CoordinationStore {
                 link.manually_archived = false;
             }
             link.updated_at = Utc::now();
+            on_hold_until = link.on_hold_until;
         }
-        self.write_links(&links).await
+        self.write_links(&links).await?;
+        Ok(on_hold_until)
     }
 
     pub async fn set_card_on_hold_date(
@@ -1298,15 +1304,16 @@ mod tests {
         let store = CoordinationStore::new(Some(base.clone()));
         let card = mk_card(&store, Some("Gitea upgrade o/h 22/11")).await;
 
-        store.move_card(&card.id, "on_hold").await.unwrap();
+        let returned = store.move_card(&card.id, "on_hold").await.unwrap();
         let links = store.read_links().await.unwrap();
         let held = links.iter().find(|l| l.id == card.id).unwrap();
+        assert_eq!(returned, held.on_hold_until, "returns the stored hold date");
         assert_eq!(held.column, "on_hold");
         assert!(held.manual_overrides.column);
         let until = held.on_hold_until.unwrap().with_timezone(&Local);
         assert_eq!((until.month(), until.day()), (11, 22));
 
-        store.move_card(&card.id, "requires_attention").await.unwrap();
+        assert_eq!(store.move_card(&card.id, "requires_attention").await.unwrap(), None);
         let after = store.read_links().await.unwrap();
         let resumed = after.iter().find(|l| l.id == card.id).unwrap();
         assert_eq!(resumed.column, "requires_attention");
