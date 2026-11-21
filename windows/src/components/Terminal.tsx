@@ -3,6 +3,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { spawn, type IPty } from "tauri-pty";
+import { invoke } from "@tauri-apps/api/core";
 import { useTheme } from "../theme";
 import "@xterm/xterm/css/xterm.css";
 
@@ -24,6 +25,10 @@ interface Props {
    *  turns so scrolling up inside the terminal shows real history — no
    *  separate overlay or tab to chase. */
   initialScrollback?: string;
+  /** `command` is a bare `cmd.exe` whose children must end with the terminal.
+   *  The shell is started with a unique marker so that closing the terminal
+   *  can kill its whole process tree, not just `cmd.exe` itself. */
+  killShellTree?: boolean;
 }
 
 const DARK_THEME = {
@@ -74,7 +79,43 @@ const LIGHT_THEME = {
   brightWhite: "#8c959f",
 };
 
-export default function TerminalView({ ptyId, command, initialInput, onExit, writeRef, fontSize = 15, initialScrollback }: Props) {
+/** False while the terminal sits in a `display: none` drawer tab. */
+function isShown(el: HTMLElement | null): boolean {
+  return !!el && el.clientWidth > 0 && el.clientHeight > 0;
+}
+
+/**
+ * Stop a PTY's process without leaving an unhandled rejection behind.
+ *
+ * `tauri-pty`'s own `kill()` drops the promise of its `plugin:pty|kill`
+ * call, and on Windows that call always fails: portable-pty 0.9's
+ * `WinChild::do_kill` treats `TerminateProcess` succeeding as an error and
+ * returns whatever stale OS error is lying around ("The wait operation timed
+ * out. (os error 258)", "(os error 0)"). Every closed drawer surfaced that as
+ * a page exception although the process had ended. Call the plugin command
+ * ourselves, after the PTY's spawn has resolved, and keep the error quiet.
+ *
+ * With a tree marker, first end the shell's whole process tree (see
+ * `kill_marked_process_tree`); the plugin kill then only tidies up.
+ */
+function killPty(pty: IPty, treeMarker: string | null) {
+  const spawned = (pty as unknown as { _init?: Promise<void> })._init ?? Promise.resolve();
+  spawned
+    .then(async () => {
+      if (treeMarker) {
+        await invoke("kill_marked_process_tree", { marker: treeMarker }).catch((err) =>
+          console.warn("[Terminal] could not end the shell's processes:", err)
+        );
+      }
+      await invoke("plugin:pty|kill", { pid: pty.pid });
+    })
+    .catch((err) => console.debug("[Terminal] pty kill reported:", err));
+}
+
+export default function TerminalView({ ptyId, command, initialInput, onExit, writeRef, fontSize = 15, initialScrollback, killShellTree }: Props) {
+  // One marker per mounted terminal, so killing an old terminal's tree can
+  // never reach a newer terminal for the same card.
+  const treeMarkerRef = useRef(killShellTree ? `kanban-pty-${crypto.randomUUID()}` : null);
   const termRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -85,7 +126,7 @@ export default function TerminalView({ ptyId, command, initialInput, onExit, wri
   const { theme } = useTheme();
 
   const doFit = useCallback(() => {
-    if (fitRef.current && xtermRef.current) {
+    if (fitRef.current && xtermRef.current && isShown(termRef.current)) {
       try {
         fitRef.current.fit();
         const dims = fitRef.current.proposeDimensions();
@@ -145,7 +186,10 @@ export default function TerminalView({ ptyId, command, initialInput, onExit, wri
       console.log("[Terminal] spawning", command[0], "cols:", cols, "rows:", rows);
 
       try {
-        const pty = spawn(command[0], command.slice(1), { cols, rows });
+        const marker = treeMarkerRef.current;
+        // `cmd /k rem <marker>` runs a no-op comment and stays interactive.
+        const args = marker ? [...command.slice(1), "/k", `rem ${marker}`] : command.slice(1);
+        const pty = spawn(command[0], args, { cols, rows });
         ptyRef.current = pty;
 
         pty.onData((data: Uint8Array) => {
@@ -179,7 +223,9 @@ export default function TerminalView({ ptyId, command, initialInput, onExit, wri
 
     // Resize observer
     const observer = new ResizeObserver(() => {
-      if (fitRef.current && xtermRef.current) {
+      // Hidden behind another drawer tab: keep the PTY at its last size
+      // rather than shrinking the session to the minimum and back.
+      if (fitRef.current && xtermRef.current && isShown(termRef.current)) {
         try {
           fitRef.current.fit();
           const dims = fitRef.current.proposeDimensions();
@@ -196,7 +242,7 @@ export default function TerminalView({ ptyId, command, initialInput, onExit, wri
     return () => {
       observer.disconnect();
       if (writeRef) writeRef.current = null;
-      ptyRef.current?.kill();
+      if (ptyRef.current) killPty(ptyRef.current, treeMarkerRef.current);
       ptyRef.current = null;
       xterm.dispose();
     };
