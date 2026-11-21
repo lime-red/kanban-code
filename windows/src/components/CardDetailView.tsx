@@ -111,6 +111,10 @@ export default function CardDetailView() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [transcriptPage, setTranscriptPage] = useState<TranscriptPage | null>(null);
   const [loadingTranscript, setLoadingTranscript] = useState(false);
+  // Which session's transcript `turns` holds (or is loading).
+  const transcriptSidRef = useRef<string | undefined>(undefined);
+  // The card activity time that load reflects; a newer one means new turns.
+  const transcriptActivityRef = useRef<string | undefined>(undefined);
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState("");
   const [terminalActive, setTerminalActive] = useState(false);
@@ -231,33 +235,14 @@ export default function CardDetailView() {
     setSearchMatches([]);
     setCurrentMatchIdx(0);
 
+    transcriptSidRef.current = sid;
+    transcriptActivityRef.current = card.link.lastActivity;
     if (!sid) return;
 
     let cancelled = false;
     (async () => {
-      setLoadingTranscript(true);
-      const collected: Turn[] = [];
-      let lastPage: TranscriptPage | null = null;
-      try {
-        let offset = 0;
-        // Walk the full transcript so the scrollback seed below carries
-        // every prior turn, not just page 1. Local file reads — fast.
-        while (true) {
-          const page = await getTranscript(sid, offset);
-          if (cancelled) return;
-          collected.push(...page.turns);
-          lastPage = page;
-          if (!page.hasMore) break;
-          offset = page.nextOffset;
-        }
-      } catch {
-        // silent — terminal still launches, just without seeded scrollback
-      } finally {
-        if (!cancelled) setLoadingTranscript(false);
-      }
-      if (cancelled) return;
-      setTurns(collected);
-      setTranscriptPage(lastPage);
+      const loaded = await loadFullTranscript(sid, () => cancelled);
+      if (!loaded) return;
       // Auto-resume: with a runtime already picked, jump straight in. No
       // Resume click required. TerminalView reads the formatted scrollback
       // from props at mount time, so `turns` must be set first.
@@ -266,6 +251,28 @@ export default function CardDetailView() {
 
     return () => { cancelled = true; };
   }, [card?.id]);
+
+  // The card's session can arrive or change while the drawer is open: a
+  // fresh launch links its first session, and `/clear` replaces it. Load
+  // that transcript too, without the card-switch resets above (the tab and
+  // the live terminal stay as they are). New turns in the same session
+  // bump the card's activity time; re-read then so History keeps up.
+  const linkedSessionId = card?.link.sessionLink?.sessionId;
+  const lastActivity = card?.link.lastActivity;
+  useEffect(() => {
+    if (!linkedSessionId) return;
+    if (linkedSessionId !== transcriptSidRef.current) {
+      transcriptSidRef.current = linkedSessionId;
+      setTurns([]);
+      setTranscriptPage(null);
+    } else if (lastActivity === transcriptActivityRef.current) {
+      return; // already loaded for this activity (e.g. by the card-open load)
+    }
+    transcriptActivityRef.current = lastActivity;
+    let cancelled = false;
+    void loadFullTranscript(linkedSessionId, () => cancelled);
+    return () => { cancelled = true; };
+  }, [linkedSessionId, lastActivity]);
 
   // If the user picks a runtime from the gate panel after the drawer is
   // already open, kick the terminal on without making them click Resume.
@@ -281,6 +288,37 @@ export default function CardDetailView() {
       setQueuedPrompts(card.link.queuedPrompts ?? []);
     }
   }, [card?.link.updatedAt]);
+
+  // Walk the full transcript so the terminal's scrollback seed carries
+  // every prior turn, not just page 1. Local file reads, so fast. Returns
+  // false when cancelled (the card or session changed meanwhile).
+  async function loadFullTranscript(sid: string, cancelled: () => boolean): Promise<boolean> {
+    // A newer session for this card supersedes an older load still running.
+    const isCancelled = () => cancelled() || transcriptSidRef.current !== sid;
+    setLoadingTranscript(true);
+    const collected: Turn[] = [];
+    let lastPage: TranscriptPage | null = null;
+    try {
+      let offset = 0;
+      while (true) {
+        const page = await getTranscript(sid, offset);
+        if (isCancelled()) return false;
+        collected.push(...page.turns);
+        lastPage = page;
+        if (!page.hasMore) break;
+        offset = page.nextOffset;
+      }
+    } catch (err) {
+      // The terminal still launches, just without seeded scrollback.
+      console.warn("transcript load failed", sid, err);
+    } finally {
+      if (!isCancelled()) setLoadingTranscript(false);
+    }
+    if (isCancelled()) return false;
+    setTurns(collected);
+    setTranscriptPage(lastPage);
+    return true;
+  }
 
   const loadTranscript = async (sessionId: string, offset: number, reset: boolean) => {
     setLoadingTranscript(true);
