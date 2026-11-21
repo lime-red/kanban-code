@@ -1140,9 +1140,15 @@ export default function CardDetailView() {
             </div>
           </div>
         )}
-        {activeTab === "terminal" && canTerminal && cardRuntime && (
+        {canTerminal && cardRuntime && (
           terminalActive ? (
-            <div className="flex-1 flex flex-col min-h-0">
+            // Stays mounted, only hidden, while another tab is showing: on the
+            // native Windows runtime there is no tmux, so unmounting the
+            // terminal would end the Claude Code process it hosts.
+            <div
+              className="flex-1 flex flex-col min-h-0"
+              style={activeTab === "terminal" ? undefined : { display: "none" }}
+            >
               <QueuedPromptsBar
                 prompts={queuedPrompts}
                 onSendNow={handleSendNow}
@@ -1204,9 +1210,10 @@ export default function CardDetailView() {
                 writeRef={terminalWriteRef}
                 fontSize={terminalFontSize}
                 initialScrollback={sessionId ? formatTranscriptScrollback(turns) : undefined}
+                killShellTree={shellCommand.length === 1 && shellCommand[0] === "cmd.exe"}
               />
             </div>
-          ) : (
+          ) : activeTab === "terminal" && (
             <div className="flex flex-col items-center justify-center flex-1 gap-4 p-8">
               <div
                 className="w-12 h-12 rounded-2xl flex items-center justify-center"

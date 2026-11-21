@@ -105,6 +105,39 @@ async fn reorder_cards(
         .map_err(|e| e.to_string())
 }
 
+/// End a drawer terminal's `cmd.exe` and every process it started.
+///
+/// The PTY plugin only terminates its direct child, and Windows does not take
+/// children down with their parent, so closing a native-runtime terminal left
+/// Claude Code running with nothing attached (and a later `--resume` started a
+/// second copy on the same session). The terminal starts its shell as
+/// `cmd.exe /k rem <marker>`; this finds that shell by the marker and kills the
+/// tree with `taskkill /T`. Must run before the plugin's own kill, since a
+/// tree can't be walked once its root has gone.
+#[tauri::command]
+async fn kill_marked_process_tree(marker: String) -> Result<(), String> {
+    if marker.len() < 16 || !marker.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err("invalid marker".into());
+    }
+    #[cfg(windows)]
+    {
+        let script = format!(
+            "Get-CimInstance Win32_Process -Filter \"Name='cmd.exe' AND CommandLine LIKE '%{marker}%'\" | \
+             ForEach-Object {{ taskkill.exe /PID $_.ProcessId /T /F | Out-Null }}"
+        );
+        let status = tokio::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .status()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !status.success() {
+            return Err(format!("process tree kill exited with {status}"));
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn mark_card_opened(
     card_id: String,
@@ -2130,6 +2163,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_board_state,
             move_card,
+            kill_marked_process_tree,
             reorder_cards,
             mark_card_opened,
             set_card_pinned,
