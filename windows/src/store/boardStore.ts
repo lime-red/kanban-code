@@ -139,8 +139,17 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
       ),
     }));
     try {
-      await invoke("move_card", { cardId, column });
+      // Moving to On Hold may read a date from the title; show it now
+      // rather than after the board refresh below, which can take seconds.
+      const onHoldUntil = await invoke<string | null>("move_card", { cardId, column });
       if (column === "on_hold") {
+        set((state) => ({
+          cards: state.cards.map((c) =>
+            c.id === cardId && c.link.column === "on_hold"
+              ? { ...c, link: { ...c.link, onHoldUntil: onHoldUntil ?? undefined } }
+              : c
+          ),
+        }));
         await get().refresh();
       }
     } catch (e) {

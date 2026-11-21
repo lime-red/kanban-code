@@ -273,6 +273,21 @@ function localStartOfDayOffsetIso(days: number): string {
   return d.toISOString();
 }
 
+/** `YYYY-MM-DD` for today plus `days`, in local time, for a date input. */
+function localDateInputValue(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** Local midnight of a date input's `YYYY-MM-DD` value, as an ISO string. */
+function dateInputToLocalStartIso(value: string): string | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).toISOString();
+}
+
 function ContextMenu({
   x, y, card, onClose, onMove, onSetHoldDate, onTogglePin, onDelete, onArchive,
 }: {
@@ -325,24 +340,35 @@ function ContextMenu({
         <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider" style={{ color: c.textDim }}>
           On Hold
         </div>
-        <button
-          onClick={() => onSetHoldDate(localStartOfDayOffsetIso(1))}
-          className="w-full text-left px-3 py-2 text-[13px] transition-colors"
+        {([[1, "Hold until tomorrow"], [3, "Hold for 3 days"], [7, "Hold for 1 week"]] as const).map(([days, label]) => (
+          <button
+            key={days}
+            onClick={() => onSetHoldDate(localStartOfDayOffsetIso(days))}
+            className="w-full text-left px-3 py-2 text-[13px] transition-colors"
+            style={{ color: c.textSecondary }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = c.hoverBg; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = ""; }}
+          >
+            {label}
+          </button>
+        ))}
+        <label
+          className="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-[13px]"
           style={{ color: c.textSecondary }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = c.hoverBg; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = ""; }}
         >
-          Hold until tomorrow
-        </button>
-        <button
-          onClick={() => onSetHoldDate(localStartOfDayOffsetIso(7))}
-          className="w-full text-left px-3 py-2 text-[13px] transition-colors"
-          style={{ color: c.textSecondary }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = c.hoverBg; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = ""; }}
-        >
-          Hold for 1 week
-        </button>
+          Hold until
+          <input
+            type="date"
+            aria-label="Hold until date"
+            min={localDateInputValue(1)}
+            onChange={(e) => {
+              const iso = dateInputToLocalStartIso(e.currentTarget.value);
+              if (iso) onSetHoldDate(iso);
+            }}
+            className="rounded px-1 py-0.5 text-[12px]"
+            style={{ background: c.bgInput, color: c.textPrimary, border: `1px solid ${c.border}`, colorScheme: theme === "dark" ? "dark" : "light" }}
+          />
+        </label>
         {card.link.onHoldUntil && (
           <button
             onClick={() => onSetHoldDate(null)}
