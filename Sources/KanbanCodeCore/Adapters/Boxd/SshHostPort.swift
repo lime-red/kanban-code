@@ -13,14 +13,22 @@ public struct SshMachine: Codable, Sendable, Equatable, Hashable, Identifiable {
     /// Folder the repositories are checked out in. `~` is the home directory
     /// on the machine.
     public var repoRoot: String
+    /// Project folders that live on the machine, offered when a card runs
+    /// there. A card started in one runs in that folder exactly, with no
+    /// checkout on this Mac. `~` is the home directory on the machine.
+    public var projectFolders: [String]
 
     public static let defaultRepoRoot = "~/Projects"
 
-    public init(id: UUID = UUID(), name: String, target: String, repoRoot: String = SshMachine.defaultRepoRoot) {
+    public init(
+        id: UUID = UUID(), name: String, target: String,
+        repoRoot: String = SshMachine.defaultRepoRoot, projectFolders: [String] = []
+    ) {
         self.id = id
         self.name = name
         self.target = target
         self.repoRoot = repoRoot
+        self.projectFolders = projectFolders
     }
 
     public init(from decoder: Decoder) throws {
@@ -29,22 +37,34 @@ public struct SshMachine: Codable, Sendable, Equatable, Hashable, Identifiable {
         name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? ""
         target = (try? c.decodeIfPresent(String.self, forKey: .target)) ?? ""
         repoRoot = (try? c.decodeIfPresent(String.self, forKey: .repoRoot)) ?? Self.defaultRepoRoot
+        projectFolders = (try? c.decodeIfPresent([String].self, forKey: .projectFolders)) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(name, forKey: .name)
+        try c.encode(target, forKey: .target)
+        try c.encode(repoRoot, forKey: .repoRoot)
+        // Left out when empty, so settings without folders read as before.
+        if !projectFolders.isEmpty { try c.encode(projectFolders, forKey: .projectFolders) }
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, target, repoRoot
+        case name, target, repoRoot, projectFolders
     }
 
     // `id` is runtime SwiftUI identity only; value equality, hashing, and
     // persisted JSON depend strictly on the machine's configuration fields.
     public static func == (lhs: SshMachine, rhs: SshMachine) -> Bool {
         lhs.name == rhs.name && lhs.target == rhs.target && lhs.repoRoot == rhs.repoRoot
+            && lhs.projectFolders == rhs.projectFolders
     }
 
     public func hash(into hasher: inout Hasher) {
         hasher.combine(name)
         hasher.combine(target)
         hasher.combine(repoRoot)
+        hasher.combine(projectFolders)
     }
 
     /// Folder template of the checkouts, in the syntax of `BoxdSettings`.
@@ -61,6 +81,26 @@ public struct SshMachine: Codable, Sendable, Equatable, Hashable, Identifiable {
         guard let at = target.firstIndex(of: "@") else { return "/root" }
         let user = String(target[..<at])
         return user == "root" ? "/root" : "/home/\(user)"
+    }
+
+    /// A project folder as the card stores it: absolute, with `~` read as
+    /// `assumedHome`. The launch moves it onto the real home of the machine.
+    public func absoluteFolder(_ folder: String) -> String {
+        var path = folder.trimmingCharacters(in: .whitespaces)
+        while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+        if path == "~" { return assumedHome }
+        if path.hasPrefix("~/") { return assumedHome + "/" + path.dropFirst(2) }
+        if !path.hasPrefix("/") { return assumedHome + "/" + path }
+        return path
+    }
+
+    /// `projectFolders` as absolute paths, without blanks or repeats.
+    public var absoluteProjectFolders: [String] {
+        var seen = Set<String>()
+        return projectFolders
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .map(absoluteFolder)
+            .filter { seen.insert($0).inserted }
     }
 
     /// A machine the settings can use: both fields filled in.

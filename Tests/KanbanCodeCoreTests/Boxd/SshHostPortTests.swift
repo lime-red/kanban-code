@@ -193,11 +193,14 @@ struct SshHostPortTests {
 
     // MARK: - Supervisor
 
-    private func makeSupervisor(port: any BoxdPort, registry: RemoteSessionRegistry, cliBundle: String? = nil, home: String) -> BoxdMachineSupervisor {
+    private func makeSupervisor(
+        port: any BoxdPort, registry: RemoteSessionRegistry, cliBundle: String? = nil, home: String,
+        sshMachines: [SshMachine] = []
+    ) -> BoxdMachineSupervisor {
         BoxdMachineSupervisor(
             boxd: port,
             registry: registry,
-            settingsProvider: { BoxdSettings(initCommand: "true", copyGlobs: []) },
+            settingsProvider: { BoxdSettings(initCommand: "true", copyGlobs: [], sshMachines: sshMachines) },
             cliBundlePath: cliBundle,
             appVersion: "1.0.0-test",
             localHome: home,
@@ -268,6 +271,35 @@ struct SshHostPortTests {
         #expect(registry.machine(forSession: "claude-aaaa") == nil)
         #expect(port.calls.callNames("stop").isEmpty)
         #expect(await supervisor.isConnected("box"))
+    }
+
+    @Test("A project folder of the machine runs in that folder, not under the repositories folder")
+    func machineFolder() async throws {
+        let home = temporaryHome()
+        let port = FakeHostPort()
+        let supervisor = makeSupervisor(
+            port: port, registry: RemoteSessionRegistry(), cliBundle: try cliBundle(in: home), home: home,
+            sshMachines: [SshMachine(name: "box", target: "root@h", projectFolders: ["~/datatruss"])])
+
+        let preparation = try await supervisor.prepare(
+            cardId: "card-1", localProjectPath: "/root/datatruss", existingMachine: "box",
+            worktreeName: nil, existingWorktree: nil, sessionNames: ["claude-bbbb"])
+        #expect(preparation.remoteProjectPath == "/root/datatruss")
+        #expect(preparation.remoteCwd == "/root/datatruss")
+
+        // A checkout of this Mac still goes under the repositories folder.
+        let project = "\(home)/code/datatruss"
+        try FileManager.default.createDirectory(atPath: project, withIntermediateDirectories: true)
+        let local = try await supervisor.prepare(
+            cardId: "card-2", localProjectPath: project, existingMachine: "box",
+            worktreeName: nil, existingWorktree: nil, sessionNames: ["claude-cccc"])
+        #expect(local.remoteProjectPath == "/root/Projects/datatruss")
+
+        // An unlisted path is never taken as written, even if this Mac lacks it.
+        let unlisted = try await supervisor.prepare(
+            cardId: "card-3", localProjectPath: "/root/other", existingMachine: "box",
+            worktreeName: nil, existingWorktree: nil, sessionNames: ["claude-dddd"])
+        #expect(unlisted.remoteProjectPath == "/root/Projects/other")
     }
 
     @Test("A session of root is marked as sandboxed, so Claude accepts skipping permissions")

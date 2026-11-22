@@ -378,7 +378,12 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     ) async throws -> BoxdPreparation {
         let settings = await settingsProvider()
         let repoRoot = Self.repositoryRoot(of: localProjectPath)
-        let originURL = await Self.originURL(of: repoRoot)
+        // A project folder listed for the ssh machine runs where it is: it
+        // has no checkout here to clone from.
+        let sshMachine = (existingMachine ?? settings.sshMachines.first(where: \.isComplete)?.name)
+            .flatMap { name in settings.sshMachines.first(where: { $0.name == name }) }
+        let onMachine = BoxdLaunchPlanner.isMachineFolder(repoRoot, of: sshMachine)
+        let originURL = onMachine ? nil : await Self.originURL(of: repoRoot)
         let repoName = BoxdLaunchPlanner.repoName(fromOriginURL: originURL, fallbackFolder: (repoRoot as NSString).lastPathComponent)
         let machineName: String
         if let existingMachine {
@@ -390,8 +395,13 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         }
         let host = await boxd.hostProfile(name: machineName)
         let remoteHome = machines[machineName]?.remoteHome ?? host?.remoteHome ?? Self.defaultRemoteHome
-        let remoteProjectPath = BoxdLaunchPlanner.remoteProjectPath(
-            folderTemplate: host?.folderTemplate ?? settings.folderTemplate, repoName: repoName, remoteHome: remoteHome)
+        let remoteProjectPath = onMachine
+            ? BoxdLaunchPlanner.machineFolderPath(
+                repoRoot,
+                assumedHome: sshMachine?.assumedHome,
+                remoteHome: remoteHome)
+            : BoxdLaunchPlanner.remoteProjectPath(
+                folderTemplate: host?.folderTemplate ?? settings.folderTemplate, repoName: repoName, remoteHome: remoteHome)
 
         let previousState = registry.state(of: machineName)
         let newNames = sessionNames.filter { registry.machine(forSession: $0) != machineName }

@@ -151,6 +151,25 @@ public enum BoxdLaunchPlanner {
         return trimTrailingSlash(path)
     }
 
+    /// True when a card's project path is one of the project folders listed
+    /// for the machine in the settings. Such a card runs in that folder as it
+    /// is, instead of in `<repositories>/<repo name>`. Only the list decides:
+    /// a machine can have the same paths as this Mac.
+    public static func isMachineFolder(_ projectPath: String, of machine: SshMachine?) -> Bool {
+        guard let machine else { return false }
+        return machine.absoluteProjectFolders.contains(trimTrailingSlash(projectPath))
+    }
+
+    /// A machine folder written against the home the app assumed for the
+    /// machine, moved onto the home the machine reported.
+    public static func machineFolderPath(_ folder: String, assumedHome: String?, remoteHome: String) -> String {
+        let path = trimTrailingSlash(folder)
+        guard let assumed = assumedHome.map(trimTrailingSlash), assumed != trimTrailingSlash(remoteHome) else { return path }
+        if path == assumed { return trimTrailingSlash(remoteHome) }
+        if path.hasPrefix(assumed + "/") { return trimTrailingSlash(remoteHome) + path.dropFirst(assumed.count) }
+        return path
+    }
+
     /// The shell snippet that prepares the checkout on the machine.
     public static func initScript(
         template: String,
