@@ -755,6 +755,46 @@ struct CardDetailView: View {
         )
     }
 
+    /// Claude Code's folder trust question, asked on the card for as long as
+    /// Claude waits on it.
+    private var trustPromptBar: some View {
+        let folder = card.link.worktreeLink?.path ?? card.link.projectPath ?? ""
+        return HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "questionmark.folder")
+                .font(.app(.title3))
+                .foregroundStyle(.orange)
+            // Truncates rather than grows: a bar that asks for more room
+            // than the drawer has pushes the whole drawer out of the window.
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Do you trust the files in this folder?")
+                    .font(.app(.callout))
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+                Text("Claude Code hasn't run in \((folder as NSString).abbreviatingWithTildeInPath) before, and waits for an answer before it starts.")
+                    .font(.app(.caption))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Don't Trust") {
+                AppComposition.shared.store.dispatch(.answerClaudeTrustPrompt(cardId: card.id, trust: false))
+            }
+            .controlSize(.small)
+            .help("Claude Code exits")
+            Button("Trust Folder") {
+                AppComposition.shared.store.dispatch(.answerClaudeTrustPrompt(cardId: card.id, trust: true))
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .help("Claude Code starts and gets the prompt")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(0.10))
+        .accessibilityIdentifier("claude-trust-prompt")
+    }
+
     @ViewBuilder
     private var terminalView: some View {
         if showTabBar {
@@ -897,6 +937,12 @@ struct CardDetailView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 0)
                 .padding(.bottom, 6)
+
+                // Claude holds the session, prompt included, until this is answered.
+                if AppComposition.shared.store.state.claudeTrustPrompts.contains(card.id) {
+                    trustPromptBar
+                    Divider()
+                }
 
                 // Queued prompts bar
                 if let prompts = card.link.queuedPrompts, !prompts.isEmpty, !rushShowsQueue {

@@ -172,6 +172,12 @@ public final class RoutingTmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         try await adapter(for: sessionName).pasteText(to: sessionName, text: text)
     }
 
+    /// rush has no menus to answer.
+    public func sendKey(to sessionName: String, key: String) async throws {
+        if RushSessionName.isRush(sessionName) { return }
+        try await adapter(for: sessionName).sendKey(to: sessionName, key: key)
+    }
+
     public func submitPrompt(to sessionName: String) async throws {
         if RushSessionName.isRush(sessionName) { return }
         try await adapter(for: sessionName).submitPrompt(to: sessionName)

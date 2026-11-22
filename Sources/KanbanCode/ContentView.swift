@@ -958,7 +958,7 @@ struct ContentView: View {
                         get: { launchConfig != nil },
                         set: { if !$0 { launchConfig = nil } }
                     ),
-                    onLaunch: { editedPrompt, createWorktree, worktreeBranch, runRemotely, skipPermissions, commandOverride, images, selectedServiceId in
+                    onLaunch: { editedPrompt, createWorktree, worktreeBranch, runRemotely, skipPermissions, commandOverride, images, selectedServiceId, trustFolder in
                         let machineChoice = pendingMachineChoice
                         pendingMachineChoice = nil
                         if config.isResume, let target = engine.movePick(
@@ -968,7 +968,7 @@ struct ContentView: View {
                             executeResume(cardId: config.cardId, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, assistant: config.assistant, serviceIdOverride: selectedServiceId, modelOverride: config.modelOverride, machineChoice: machineChoice)
                         } else {
                             let wtName: String? = createWorktree ? (worktreeBranch ?? config.worktreeName ?? "") : nil
-                            executeLaunch(cardId: config.cardId, prompt: editedPrompt, projectPath: config.projectPath, worktreeName: wtName, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, images: images, assistant: config.assistant, serviceIdOverride: selectedServiceId, modelOverride: config.modelOverride, machineChoice: machineChoice)
+                            executeLaunch(cardId: config.cardId, prompt: editedPrompt, projectPath: config.projectPath, worktreeName: wtName, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, images: images, assistant: config.assistant, serviceIdOverride: selectedServiceId, modelOverride: config.modelOverride, machineChoice: machineChoice, trustFolder: trustFolder)
                         }
                     },
                     onMachineChoice: { pendingMachineChoice = $0 },

@@ -5,6 +5,8 @@ import KanbanCodeRemoteKit
 public enum ImageSendError: Error, LocalizedError {
     case assistantNotReady(CodingAssistant)
     case imageUploadTimeout(expected: Int, assistant: CodingAssistant)
+    case trustAnswerNotSelected
+    case folderNotTrusted
 
     public var errorDescription: String? {
         switch self {
@@ -12,6 +14,10 @@ public enum ImageSendError: Error, LocalizedError {
             "\(assistant.displayName) did not become ready within the timeout period"
         case .imageUploadTimeout(let n, let assistant):
             "Timed out waiting for image #\(n) to be accepted by \(assistant.displayName)"
+        case .trustAnswerNotSelected:
+            "Could not select the answer on Claude Code's trust screen"
+        case .folderNotTrusted:
+            "Claude Code quit: the folder was not trusted"
         }
     }
 }
@@ -30,21 +36,63 @@ public actor ImageSender {
     }
 
     /// Wait for the coding assistant to show its input prompt.
+    ///
+    /// Claude Code first asks whether to trust a folder it has not seen. With
+    /// `trustFolder` (the person ticked "Trust this folder" when launching)
+    /// the answer is "Yes, I trust this folder": the highlight is moved there
+    /// and Enter pressed only once the pane shows it selected, since the
+    /// default answer exits Claude. Otherwise the person answers it in the
+    /// terminal or from the card: `onTrustPrompt(true)` runs when the screen
+    /// comes up and `onTrustPrompt(false)` when it goes, and the wait lasts
+    /// up to `trustAnswerTimeout` while it is up.
     public func waitForReady(
         sessionName: String,
         assistant: CodingAssistant = .claude,
+        trustFolder: Bool = false,
+        onTrustPrompt: (@Sendable (Bool) async -> Void)? = nil,
         pollInterval: Duration = .milliseconds(500),
-        timeout: Duration? = nil
+        timeout: Duration? = nil,
+        trustAnswerTimeout: Duration = .seconds(12 * 3600)
     ) async throws {
         // A rush host takes messages as soon as it runs, and queues them.
         if RushSessionName.isRush(sessionName) { return }
         // Gemini and Codex can take longer to start (auth checks, banners, model setup).
         let effectiveTimeout = timeout ?? (assistant == .gemini || assistant == .codex ? .seconds(60) : .seconds(30))
-        let start = ContinuousClock.now
+        var start = ContinuousClock.now
         var acceptedCodexStartupPrompt = false
+        var trustPromptSince: ContinuousClock.Instant?
+        var trustKeysSent = 0
+        var trustShown = false
         while ContinuousClock.now - start < effectiveTimeout {
             let output = try await tmux.capturePane(sessionName: sessionName)
-            if PaneOutputParser.isReady(output, assistant: assistant) { return }
+            // Answered No: Claude has quit, and the prompt would go to the shell.
+            if assistant == .claude, PaneOutputParser.claudeTrustDeclined(output) {
+                if trustShown { await onTrustPrompt?(false) }
+                throw ImageSendError.folderNotTrusted
+            }
+            let ready = PaneOutputParser.isReady(output, assistant: assistant)
+            let screen = !ready && assistant == .claude ? PaneOutputParser.claudeTrustPrompt(output) : nil
+            // The person is asked while the screen is up and launch is not answering it.
+            let asking = screen != nil && !(trustFolder && trustKeysSent < 4)
+            if asking != trustShown {
+                trustShown = asking
+                await onTrustPrompt?(asking)
+            }
+            if ready { return }
+            if let trust = screen {
+                if trustFolder, trustKeysSent < 4 {
+                    // At most a few presses: the menu has two answers.
+                    trustKeysSent += 1
+                    try await tmux.sendKey(to: sessionName, key: trust.yesIsSelected ? "Enter" : "Down")
+                } else if trustPromptSince == nil {
+                    trustPromptSince = .now
+                }
+                // Claude waits on the person, so the start-up timeout waits too.
+                if let since = trustPromptSince, ContinuousClock.now - since >= trustAnswerTimeout { break }
+                start = .now
+                try await Task.sleep(for: pollInterval)
+                continue
+            }
             if assistant == .codex,
                !acceptedCodexStartupPrompt,
                PaneOutputParser.codexNeedsStartupConfirmation(output) {
@@ -54,6 +102,33 @@ public actor ImageSender {
             try await Task.sleep(for: pollInterval)
         }
         throw ImageSendError.assistantNotReady(assistant)
+    }
+
+    /// Answers Claude's folder trust screen: moves the highlight to the
+    /// answer and presses Enter only once the pane shows it selected. Does
+    /// nothing when the screen is not up.
+    public func answerTrustPrompt(
+        sessionName: String,
+        trust: Bool,
+        pollInterval: Duration = .milliseconds(300)
+    ) async throws {
+        // Versions list the answers in either order, so the arrow that did
+        // not move the highlight is swapped for the other one.
+        var key = "Down"
+        var pressed = false
+        for _ in 0..<4 {
+            let output = try await tmux.capturePane(sessionName: sessionName)
+            guard let screen = PaneOutputParser.claudeTrustPrompt(output) else { return }
+            if screen.yesIsSelected == trust {
+                try await tmux.sendKey(to: sessionName, key: "Enter")
+                return
+            }
+            if pressed { key = key == "Down" ? "Up" : "Down" }
+            try await tmux.sendKey(to: sessionName, key: key)
+            pressed = true
+            try await Task.sleep(for: pollInterval)
+        }
+        throw ImageSendError.trustAnswerNotSelected
     }
 
     /// Send images one by one, confirming each before sending the next.

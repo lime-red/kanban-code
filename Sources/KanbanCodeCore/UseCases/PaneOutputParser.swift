@@ -20,7 +20,15 @@ public enum PaneOutputParser {
     /// Check if the assistant's input prompt is visible (ready for input).
     public static func isReady(_ paneOutput: String, assistant: CodingAssistant) -> Bool {
         switch assistant {
-        case .claude, .gemini:
+        case .claude:
+            // The trust screen's menu marks its selected line with `❯` too.
+            // A trust screen left in the pane highlights an answer with the
+            // same ❯ as the input prompt, so only what follows it counts.
+            guard let trust = lastClaudeTrustScreen(paneOutput) else {
+                return paneOutput.contains(assistant.promptCharacter)
+            }
+            return !trust.isCurrent && trust.below.contains { $0.contains(assistant.promptCharacter) }
+        case .gemini:
             return paneOutput.contains(assistant.promptCharacter)
         case .codex:
             // Codex also prefixes historical user turns with `› text`; only a
@@ -63,6 +71,69 @@ public enum PaneOutputParser {
         let hasQuitOption = lines.contains { $0 == "2. No, quit" }
         let asksForEnter = lines.contains { $0.localizedCaseInsensitiveContains("press enter to continue") }
         return hasContinueOption && hasQuitOption && asksForEnter
+    }
+
+    /// Claude Code's folder trust screen, shown the first time it runs in a
+    /// folder nobody has trusted. Claude holds everything until it is
+    /// answered, and its highlighted answer is "No, exit".
+    public struct ClaudeTrustPrompt: Equatable, Sendable {
+        /// "Yes, I trust this folder" is the highlighted answer.
+        public let yesIsSelected: Bool
+    }
+
+    /// The trust screen, if the pane shows it. Current Claude Code lists
+    /// "❯ No, exit" then "Yes, I trust this folder"; older versions asked
+    /// "Do you trust the files in this folder?" with "1. Yes, proceed" and
+    /// "2. No, exit".
+    public static func claudeTrustPrompt(_ paneOutput: String) -> ClaudeTrustPrompt? {
+        guard let trust = lastClaudeTrustScreen(paneOutput), trust.isCurrent else { return nil }
+        return ClaudeTrustPrompt(yesIsSelected: trust.yesIsSelected)
+    }
+
+    /// The trust screen was answered "No, exit" (or cancelled): Claude Code
+    /// has quit, and what follows it in the pane is the shell.
+    public static func claudeTrustDeclined(_ paneOutput: String) -> Bool {
+        guard let trust = lastClaudeTrustScreen(paneOutput) else { return false }
+        return !trust.isCurrent && !trust.yesIsSelected
+    }
+
+    private struct TrustScreen {
+        let yesIsSelected: Bool
+        /// Lines after the screen, other than its "Enter to confirm" hint.
+        let below: [String]
+        /// Nothing follows it yet: Claude Code is waiting for the answer.
+        var isCurrent: Bool { below.isEmpty }
+    }
+
+    /// The last trust screen in the pane, whether it is still up or was
+    /// answered: its text stays above whatever runs next.
+    private static func lastClaudeTrustScreen(_ paneOutput: String) -> TrustScreen? {
+        let lines = paneOutput
+            .components(separatedBy: .newlines)
+            .map { stripAnsi($0).trimmingCharacters(in: .whitespaces) }
+        let asksAboutFiles = lines.contains { $0.localizedCaseInsensitiveContains("Do you trust the files in this folder") }
+        // The answer without the highlight and any "1." numbering.
+        func answer(_ line: String) -> String {
+            var s = Substring(line)
+            if s.hasPrefix("❯") || s.hasPrefix(">") { s = s.dropFirst() }
+            s = s.drop(while: { $0 == " " })
+            if let dot = s.firstIndex(of: "."), s[..<dot].allSatisfy(\.isNumber), !s[..<dot].isEmpty {
+                s = s[s.index(after: dot)...].drop(while: { $0 == " " })
+            }
+            return String(s)
+        }
+        func isYes(_ line: String) -> Bool {
+            let a = answer(line)
+            return a == "Yes, I trust this folder" || (asksAboutFiles && a == "Yes, proceed")
+        }
+        guard let no = lines.lastIndex(where: { answer($0) == "No, exit" }),
+              let yes = lines.lastIndex(where: isYes)
+        else { return nil }
+        let below = lines[(max(no, yes) + 1)...].filter {
+            !$0.isEmpty && !$0.localizedCaseInsensitiveContains("Enter to confirm")
+        }
+        let yesLine = lines[yes]
+        return TrustScreen(yesIsSelected: yesLine.hasPrefix("❯") || yesLine.hasPrefix(">"), below: Array(below))
     }
 
     /// Backward-compatible: check if Claude Code's input prompt is visible.
