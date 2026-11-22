@@ -90,6 +90,13 @@ struct ClaudeTrustPromptTests {
         #expect(PaneOutputParser.claudeTrustPrompt(Self.readyPrompt) == nil)
     }
 
+    @Test("An answered trust screen left in the pane is not the trust screen")
+    func answeredScreenIsGone() {
+        let exited = Self.trustScreen + "\nadmin@mac test3 % "
+        #expect(PaneOutputParser.claudeTrustPrompt(exited) == nil)
+        #expect(PaneOutputParser.claudeTrustPrompt(Self.trustScreen + "\n\n") == .init(yesIsSelected: false))
+    }
+
     @Test("Another menu with Yes and No answers is not the trust screen")
     func otherMenusAreNotTrust() {
         let bypass = """

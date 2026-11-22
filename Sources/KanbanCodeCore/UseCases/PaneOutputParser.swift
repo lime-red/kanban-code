@@ -96,13 +96,19 @@ public enum PaneOutputParser {
             }
             return String(s)
         }
-        guard lines.contains(where: { answer($0) == "No, exit" }),
-              let yes = lines.first(where: {
-                  let a = answer($0)
-                  return a == "Yes, I trust this folder" || (asksAboutFiles && a == "Yes, proceed")
-              })
+        func isYes(_ line: String) -> Bool {
+            let a = answer(line)
+            return a == "Yes, I trust this folder" || (asksAboutFiles && a == "Yes, proceed")
+        }
+        guard let no = lines.lastIndex(where: { answer($0) == "No, exit" }),
+              let yes = lines.lastIndex(where: isYes)
         else { return nil }
-        return ClaudeTrustPrompt(yesIsSelected: yes.hasPrefix("❯") || yes.hasPrefix(">"))
+        // Only while it is the screen: once answered, its text stays in the
+        // pane above whatever runs next (a shell prompt after "No, exit").
+        let after = lines[(max(no, yes) + 1)...].filter { !$0.isEmpty }
+        guard after.allSatisfy({ $0.localizedCaseInsensitiveContains("Enter to confirm") }) else { return nil }
+        let yesLine = lines[yes]
+        return ClaudeTrustPrompt(yesIsSelected: yesLine.hasPrefix("❯") || yesLine.hasPrefix(">"))
     }
 
     /// Backward-compatible: check if Claude Code's input prompt is visible.

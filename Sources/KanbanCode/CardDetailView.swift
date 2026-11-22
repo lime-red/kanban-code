@@ -776,24 +776,30 @@ struct CardDetailView: View {
             Image(systemName: "questionmark.folder")
                 .font(.app(.title3))
                 .foregroundStyle(.orange)
+            // Truncates rather than grows: a bar that asks for more room
+            // than the drawer has pushes the whole drawer out of the window.
             VStack(alignment: .leading, spacing: 2) {
                 Text("Do you trust the files in this folder?")
                     .font(.app(.callout))
                     .fontWeight(.medium)
+                    .lineLimit(1)
                 Text("Claude Code hasn't run in \((folder as NSString).abbreviatingWithTildeInPath) before, and waits for an answer before it starts.")
                     .font(.app(.caption))
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
             }
-            Spacer(minLength: 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
             Button("Don't Trust") {
                 AppComposition.shared.store.dispatch(.answerClaudeTrustPrompt(cardId: card.id, trust: false))
             }
+            .controlSize(.small)
             .help("Claude Code exits")
             Button("Trust Folder") {
                 AppComposition.shared.store.dispatch(.answerClaudeTrustPrompt(cardId: card.id, trust: true))
             }
             .buttonStyle(.borderedProminent)
+            .controlSize(.small)
             .help("Claude Code starts and gets the prompt")
         }
         .padding(.horizontal, 12)
