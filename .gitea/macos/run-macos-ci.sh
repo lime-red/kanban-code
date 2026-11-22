@@ -51,10 +51,11 @@ VM_MEMORY="${VM_MEMORY:-8192}"
 LOG_DIR="${LOG_DIR:-$(dirname "$TART_HOME")/ci-logs}"
 SWIFT_TEST_ARGS="${SWIFT_TEST_ARGS:-}"
 # Suites whose waits are tight enough (the vault broker allows 2 s per
-# approval) that the VM's slower, shared CPUs fail them when the whole suite
-# runs in parallel. They pass reliably run one at a time, so they get a second,
-# serial pass. A regex for swift test's --filter / --skip.
-SERIAL_TESTS="${SERIAL_TESTS:-Vault|RemoteControlServerTests|ImagePasteTests}"
+# approval; ImageSender's waitForReady polls a fake pane for a few seconds)
+# that the VM's slower, shared CPUs fail them when the whole suite runs in
+# parallel. They pass reliably run one at a time, so they get a second, serial
+# pass. A regex for swift test's --filter / --skip.
+SERIAL_TESTS="${SERIAL_TESTS:-Vault|RemoteControlServerTests|ImagePasteTests|ImageSenderMultiAssistant}"
 # Tests skipped in the VM: RemoteControlServerTests' "events pushes at most
 # once per push interval" (eventsThrottle) expects a push within 1.2 s of 20
 # changes made 20 ms apart, and in the VM the sleeps alone use up that window;
