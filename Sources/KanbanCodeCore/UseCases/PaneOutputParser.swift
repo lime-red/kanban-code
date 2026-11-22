@@ -22,7 +22,12 @@ public enum PaneOutputParser {
         switch assistant {
         case .claude:
             // The trust screen's menu marks its selected line with `❯` too.
-            return paneOutput.contains(assistant.promptCharacter) && claudeTrustPrompt(paneOutput) == nil
+            // A trust screen left in the pane highlights an answer with the
+            // same ❯ as the input prompt, so only what follows it counts.
+            guard let trust = lastClaudeTrustScreen(paneOutput) else {
+                return paneOutput.contains(assistant.promptCharacter)
+            }
+            return !trust.isCurrent && trust.below.contains { $0.contains(assistant.promptCharacter) }
         case .gemini:
             return paneOutput.contains(assistant.promptCharacter)
         case .codex:
@@ -81,9 +86,30 @@ public enum PaneOutputParser {
     /// "Do you trust the files in this folder?" with "1. Yes, proceed" and
     /// "2. No, exit".
     public static func claudeTrustPrompt(_ paneOutput: String) -> ClaudeTrustPrompt? {
+        guard let trust = lastClaudeTrustScreen(paneOutput), trust.isCurrent else { return nil }
+        return ClaudeTrustPrompt(yesIsSelected: trust.yesIsSelected)
+    }
+
+    /// The trust screen was answered "No, exit" (or cancelled): Claude Code
+    /// has quit, and what follows it in the pane is the shell.
+    public static func claudeTrustDeclined(_ paneOutput: String) -> Bool {
+        guard let trust = lastClaudeTrustScreen(paneOutput) else { return false }
+        return !trust.isCurrent && !trust.yesIsSelected
+    }
+
+    private struct TrustScreen {
+        let yesIsSelected: Bool
+        /// Lines after the screen, other than its "Enter to confirm" hint.
+        let below: [String]
+        /// Nothing follows it yet: Claude Code is waiting for the answer.
+        var isCurrent: Bool { below.isEmpty }
+    }
+
+    /// The last trust screen in the pane, whether it is still up or was
+    /// answered: its text stays above whatever runs next.
+    private static func lastClaudeTrustScreen(_ paneOutput: String) -> TrustScreen? {
         let lines = paneOutput
             .components(separatedBy: .newlines)
-            .suffix(40)
             .map { stripAnsi($0).trimmingCharacters(in: .whitespaces) }
         let asksAboutFiles = lines.contains { $0.localizedCaseInsensitiveContains("Do you trust the files in this folder") }
         // The answer without the highlight and any "1." numbering.
@@ -103,12 +129,11 @@ public enum PaneOutputParser {
         guard let no = lines.lastIndex(where: { answer($0) == "No, exit" }),
               let yes = lines.lastIndex(where: isYes)
         else { return nil }
-        // Only while it is the screen: once answered, its text stays in the
-        // pane above whatever runs next (a shell prompt after "No, exit").
-        let after = lines[(max(no, yes) + 1)...].filter { !$0.isEmpty }
-        guard after.allSatisfy({ $0.localizedCaseInsensitiveContains("Enter to confirm") }) else { return nil }
+        let below = lines[(max(no, yes) + 1)...].filter {
+            !$0.isEmpty && !$0.localizedCaseInsensitiveContains("Enter to confirm")
+        }
         let yesLine = lines[yes]
-        return ClaudeTrustPrompt(yesIsSelected: yesLine.hasPrefix("❯") || yesLine.hasPrefix(">"))
+        return TrustScreen(yesIsSelected: yesLine.hasPrefix("❯") || yesLine.hasPrefix(">"), below: Array(below))
     }
 
     /// Backward-compatible: check if Claude Code's input prompt is visible.

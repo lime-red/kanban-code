@@ -97,6 +97,43 @@ struct ClaudeTrustPromptTests {
         #expect(PaneOutputParser.claudeTrustPrompt(Self.trustScreen + "\n\n") == .init(yesIsSelected: false))
     }
 
+    @Test("Answering No leaves Claude quit, not ready for the prompt")
+    func declinedIsNotReady() {
+        let exited = Self.trustScreen + "\nadmin@mac test3 % "
+        #expect(PaneOutputParser.claudeTrustDeclined(exited))
+        #expect(!PaneOutputParser.isReady(exited, assistant: .claude))
+        #expect(!PaneOutputParser.claudeTrustDeclined(Self.trustScreen))
+        #expect(!PaneOutputParser.claudeTrustDeclined(Self.readyPrompt))
+    }
+
+    @Test("After Yes, the prompt below the old screen is ready")
+    func trustedThenReady() {
+        let started = Self.yesSelected + "\n" + Self.readyPrompt
+        #expect(!PaneOutputParser.claudeTrustDeclined(started))
+        #expect(PaneOutputParser.claudeTrustPrompt(started) == nil)
+        #expect(PaneOutputParser.isReady(started, assistant: .claude))
+    }
+
+    @Test("The launch stops, sending nothing, when the folder is not trusted")
+    func declinedStopsTheLaunch() async {
+        let mock = MockTmux()
+        mock.screens = [Self.trustScreen]
+        let events = Events()
+        let sender = ImageSender(tmux: mock)
+        let wait = Task {
+            try await sender.waitForReady(
+                sessionName: "s", assistant: .claude,
+                onTrustPrompt: { events.shown.append($0) },
+                pollInterval: .milliseconds(5), timeout: .milliseconds(50))
+        }
+        try? await Task.sleep(for: .milliseconds(200))
+        // The person answers No and Claude quits to the shell.
+        mock.screens = [Self.trustScreen + "\nadmin@mac test3 % "]
+        await #expect(throws: ImageSendError.self) { try await wait.value }
+        #expect(mock.keys.isEmpty)
+        #expect(events.shown == [true, false])
+    }
+
     @Test("Another menu with Yes and No answers is not the trust screen")
     func otherMenusAreNotTrust() {
         let bypass = """

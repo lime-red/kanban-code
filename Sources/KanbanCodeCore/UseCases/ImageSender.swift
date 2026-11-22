@@ -6,6 +6,7 @@ public enum ImageSendError: Error, LocalizedError {
     case assistantNotReady(CodingAssistant)
     case imageUploadTimeout(expected: Int, assistant: CodingAssistant)
     case trustAnswerNotSelected
+    case folderNotTrusted
 
     public var errorDescription: String? {
         switch self {
@@ -15,6 +16,8 @@ public enum ImageSendError: Error, LocalizedError {
             "Timed out waiting for image #\(n) to be accepted by \(assistant.displayName)"
         case .trustAnswerNotSelected:
             "Could not select the answer on Claude Code's trust screen"
+        case .folderNotTrusted:
+            "Claude Code quit: the folder was not trusted"
         }
     }
 }
@@ -62,6 +65,11 @@ public actor ImageSender {
         var trustShown = false
         while ContinuousClock.now - start < effectiveTimeout {
             let output = try await tmux.capturePane(sessionName: sessionName)
+            // Answered No: Claude has quit, and the prompt would go to the shell.
+            if assistant == .claude, PaneOutputParser.claudeTrustDeclined(output) {
+                if trustShown { await onTrustPrompt?(false) }
+                throw ImageSendError.folderNotTrusted
+            }
             let ready = PaneOutputParser.isReady(output, assistant: assistant)
             let screen = !ready && assistant == .claude ? PaneOutputParser.claudeTrustPrompt(output) : nil
             // The person is asked while the screen is up and launch is not answering it.
