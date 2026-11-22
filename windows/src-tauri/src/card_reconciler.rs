@@ -359,12 +359,18 @@ fn project_matches(session: &Session, link: &Link) -> bool {
     let Some(link_path) = &link.project_path else {
         return true;
     };
-    // Compare with `/` separators: on Windows the transcript's cwd is
-    // `C:\repo\.claude\worktrees\x`, which never starts with `C:\repo/`.
-    let session_path = session_path.replace('\\', "/");
-    let link_path = link_path.replace('\\', "/");
-    let link_path = link_path.trim_end_matches('/');
+    let session_path = comparable_path(session_path);
+    let link_path = comparable_path(link_path);
     session_path == link_path || session_path.starts_with(&format!("{}/", link_path))
+}
+
+/// A project path in one form for comparing: `/` separators (on Windows the
+/// transcript's cwd is `C:\repo\.claude\worktrees\x`, which never starts with
+/// `C:\repo/`), no trailing `/`, and drive paths as WSL sees them, so a card
+/// for `C:\repo` matches a session Claude ran in WSL at `/mnt/c/repo`.
+fn comparable_path(p: &str) -> String {
+    crate::tmux::drive_path_to_wsl(p)
+        .unwrap_or_else(|| p.replace('\\', "/").trim_end_matches('/').to_string())
 }
 
 /// Stricter than `project_matches`, for the rules that match on project
@@ -377,7 +383,7 @@ fn same_project(session: &Session, link: &Link) -> bool {
     let (Some(session_path), Some(link_path)) = (&session.project_path, &link.project_path) else {
         return false;
     };
-    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_ascii_lowercase();
+    let norm = |p: &str| comparable_path(p).to_ascii_lowercase();
     let (session_path, link_path) = (norm(session_path), norm(link_path));
     session_path == link_path
         || session_path.starts_with(&format!("{link_path}/.claude/worktrees/"))
@@ -689,6 +695,16 @@ mod project_match_tests {
         let mut unknown = link(r"C:\repo");
         unknown.project_path = None;
         assert!(!same_project(&session(r"C:\repo"), &unknown));
+    }
+
+    #[test]
+    fn wsl_session_matches_its_windows_card() {
+        // Claude in WSL reports the project as /mnt/c/...; the card keeps C:\...
+        assert!(same_project(&session("/mnt/c/Users/dev/code/kc-e2e"), &link(r"C:\Users\dev\code\kc-e2e")));
+        assert!(same_project(&session("/mnt/c/repo/.claude/worktrees/x"), &link(r"C:\repo")));
+        assert!(project_matches(&session("/mnt/c/repo/sub"), &link(r"C:\repo")));
+        assert!(!same_project(&session("/mnt/d/repo"), &link(r"C:\repo")));
+        assert!(!same_project(&session("/home/dev/repo"), &link(r"C:\repo")));
     }
 
     #[test]
