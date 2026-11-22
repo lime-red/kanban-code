@@ -75,15 +75,19 @@ if (-not (Test-Path "$project\.git")) {
 node $js trust "$env:USERPROFILE\.claude.json" - $project
 if ($LASTEXITCODE -ne 0) { "could not mark $project trusted in .claude.json"; exit 2 }
 "trusted for Claude Code: $project"
+# The same for Claude Code inside WSL (used when RUNTIME=wsl).
+$wslHere = '/mnt/' + $here.Substring(0, 1).ToLower() + ($here.Substring(2) -replace '\\', '/')
+$wslProject = '/mnt/' + $project.Substring(0, 1).ToLower() + ($project.Substring(2) -replace '\\', '/')
+& wsl.exe -- bash "$wslHere/wsl-prep.sh" $wslProject 2>&1 | ForEach-Object { "  wsl: $_" }
 Remove-Item -Recurse -Force $transcripts -ErrorAction SilentlyContinue
 
-$cmd = "$here\launch.cmd"
+# Hidden launcher (see start-build.ps1); the app's own window still shows.
+$launch = "$here\launch.ps1"
 @"
-@echo off
-set WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222 --remote-allow-origins=*
-start "" "$exe"
-"@ | Set-Content -Encoding ASCII $cmd
-$action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/c `"$cmd`""
+`$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9222 --remote-allow-origins=*'
+Start-Process -FilePath '$exe'
+"@ | Set-Content -Encoding ASCII $launch
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$launch`""
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName 'KanbanCodeE2ELaunch' -Action $action -Principal $principal -Force | Out-Null
 Start-ScheduledTask -TaskName 'KanbanCodeE2ELaunch'

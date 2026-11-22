@@ -5,14 +5,14 @@ module.exports = {
   async run(t) {
     await t.tab('Terminal');
     await t.page.waitForTimeout(1500);
-    const before = t.drawerClaudes();
-    t.check(before.length === 1, `one Claude under the drawer terminal (found ${before.length})`);
+    const before = t.claudes();
+    t.check(before.length === 1, `one Claude for the card (found ${before.length})`);
 
     await t.tab('History');
     await t.page.waitForTimeout(3000);
     await t.tab('Terminal');
     await t.page.waitForTimeout(2000);
-    const after = t.drawerClaudes();
+    const after = t.claudes();
     t.check(after.length === 1 && after[0].pid === before[0].pid,
       `same Claude pid after History and back (${before[0].pid} -> ${after.map((p) => p.pid).join(',') || 'none'})`);
     const rows = await t.page.evaluate(() => document.querySelector('.xterm-rows')?.children.length || 0);
