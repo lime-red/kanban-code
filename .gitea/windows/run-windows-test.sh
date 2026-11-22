@@ -33,6 +33,8 @@
 #   LOG_DIR        run logs and screenshots (default: ~/Library/Logs/kanban-code-ci/windows)
 #   SKIP_BUILD=1   test the app the VM built last, without checking out or building
 #   SPEC           run only specs whose file name contains this
+#   RUNTIME        card runtime to test: windows (cmd.exe, default) or wsl
+#                  (Claude in a tmux session inside WSL)
 #   KEEP_APP=1     leave the app running on test data afterwards (for a look);
 #                  run vm/teardown.ps1 on the VM to restore the real board
 #
@@ -103,7 +105,7 @@ if lsof -nP -iTCP:9222 -sTCP:LISTEN >/dev/null 2>&1; then
   die "something on this Mac already listens on port 9222 (an old tunnel?)"
 fi
 vm "New-Item -ItemType Directory -Force $VM_DIR | Out-Null"
-scp -q "${ssh_opts[@]}" "$here"/vm/*.ps1 "$VM_HOST:$VM_DIR_SCP/"
+scp -q "${ssh_opts[@]}" "$here"/vm/*.ps1 "$here"/vm/*.sh "$VM_HOST:$VM_DIR_SCP/"
 
 # 2. Build.
 if [ -z "${SKIP_BUILD:-}" ]; then
@@ -146,9 +148,10 @@ if [ ! -d "$here/e2e/node_modules/playwright-core" ]; then
   echo "== Installing playwright-core for the e2e runner (once)"
   npm install --prefix "$here/e2e" --no-audit --no-fund --silent
 fi
-echo "== Running e2e specs${SPEC:+ matching $SPEC}"
+RUNTIME="${RUNTIME:-windows}"
+echo "== Running e2e specs${SPEC:+ matching $SPEC} on the $RUNTIME runtime"
 set +e
-VM_HOST="$VM_HOST" VM_SSH_KEY="$VM_SSH_KEY" VM_DIR="$VM_DIR" \
+VM_HOST="$VM_HOST" VM_SSH_KEY="$VM_SSH_KEY" VM_DIR="$VM_DIR" RUNTIME="$RUNTIME" \
   node "$here/e2e/run.js" "$run_dir/shots" "${SPEC:-}"
 result=$?
 set -e
