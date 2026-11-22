@@ -98,18 +98,19 @@ impl BoardState {
             update_card_column(link, activity, has_worktree);
         }
 
-        // --- Always persist — column changes must be written back ---
-        let old_map: HashMap<String, &Link> =
-            existing_links.iter().map(|l| (l.id.clone(), l)).collect();
-        let has_changes = all_links.len() != existing_links.len()
-            || all_links.iter().any(|l| {
-                old_map
-                    .get(&l.id)
-                    .map(|old| old.column != l.column || old.updated_at != l.updated_at)
-                    .unwrap_or(true)
-            });
-        if has_changes {
-            let _ = store.write_links(&all_links).await;
+        // --- Persist onto the current file, not onto the snapshot read above ---
+        // Discovery and reconciling take a while; a card created, edited or
+        // deleted meanwhile must survive this write (as macOS modifyLinks).
+        // The board then shows the merged links, so it isn't a refresh behind.
+        let refreshed = all_links.clone();
+        if let Ok(merged) = store
+            .modify_links(|fresh| {
+                merge_refresh(&existing_links, refreshed, fresh);
+                fresh.clone()
+            })
+            .await
+        {
+            all_links = merged;
         }
 
         // --- Build CardDtos using cached activity ---
@@ -215,6 +216,46 @@ impl BoardState {
 /// without a project_path or without a branch; bails on git failures (no
 /// worktree info isn't fatal). Worktrees are listed at most once per
 /// project_root so the polling loop doesn't fork git N times for one repo.
+/// Apply one refresh's result to the links as they are now.
+///
+/// `snapshot` is what the refresh read, `refreshed` what it made of it, and
+/// `current` the store's links at write time, changed in place:
+/// - a card unchanged since the snapshot takes the refreshed version (its
+///   column, newly linked session, ...), or goes if the refresh dropped it;
+/// - a card changed since the snapshot keeps its current version; the next
+///   refresh reconciles it;
+/// - cards the refresh discovered are added, unless they were in the snapshot
+///   and have been deleted since;
+/// - cards created since the snapshot stay.
+fn merge_refresh(snapshot: &[Link], refreshed: Vec<Link>, current: &mut Vec<Link>) {
+    let as_json = |l: &Link| serde_json::to_value(l).ok();
+    let snap: HashMap<&str, Option<serde_json::Value>> =
+        snapshot.iter().map(|l| (l.id.as_str(), as_json(l))).collect();
+    let mut refreshed_by_id: HashMap<String, Link> =
+        refreshed.iter().map(|l| (l.id.clone(), l.clone())).collect();
+
+    current.retain_mut(|cur| {
+        let Some(before) = snap.get(cur.id.as_str()) else {
+            return true; // created since the snapshot
+        };
+        let unchanged = before.is_some() && *before == as_json(cur);
+        match refreshed_by_id.remove(&cur.id) {
+            Some(r) if unchanged => {
+                *cur = r;
+                true
+            }
+            Some(_) => true,
+            None => !unchanged, // the refresh dropped it
+        }
+    });
+
+    for link in refreshed {
+        if !snap.contains_key(link.id.as_str()) && refreshed_by_id.contains_key(&link.id) {
+            current.push(link);
+        }
+    }
+}
+
 async fn backfill_worktree_paths(links: &mut [Link]) {
     use std::collections::HashMap;
 
@@ -311,5 +352,71 @@ mod relative_time_tests {
         let now = local(2026, 11, 15, 12, 0);
         assert_eq!(format_relative_time_at(local(2026, 11, 15, 12, 5).with_timezone(&Utc), now), "just now");
         assert_eq!(format_relative_time_at(local(2026, 11, 15, 11, 30).with_timezone(&Utc), now), "30m ago");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn card(id: &str, column: &str) -> Link {
+        let mut l: Link = serde_json::from_value(serde_json::json!({
+            "id": id,
+            "column": column,
+            "source": "manual",
+            "createdAt": "2026-11-22T00:00:00Z",
+            "updatedAt": "2026-11-22T00:00:00Z",
+        }))
+        .expect("minimal link");
+        l.name = Some(id.to_string());
+        l
+    }
+
+    fn ids(links: &[Link]) -> Vec<(String, String)> {
+        links.iter().map(|l| (l.id.clone(), l.column.clone())).collect()
+    }
+
+    #[test]
+    fn refresh_keeps_a_card_created_while_it_ran() {
+        let snapshot = vec![card("a", "backlog")];
+        let refreshed = vec![card("a", "waiting")];
+        let mut current = vec![card("a", "backlog"), card("new", "backlog")];
+        merge_refresh(&snapshot, refreshed, &mut current);
+        assert_eq!(ids(&current), vec![("a".into(), "waiting".into()), ("new".into(), "backlog".into())]);
+    }
+
+    #[test]
+    fn refresh_keeps_an_edit_made_while_it_ran() {
+        let snapshot = vec![card("a", "backlog")];
+        let refreshed = vec![card("a", "waiting")];
+        let mut current = vec![card("a", "on_hold")];
+        merge_refresh(&snapshot, refreshed, &mut current);
+        assert_eq!(ids(&current), vec![("a".into(), "on_hold".into())]);
+    }
+
+    #[test]
+    fn refresh_does_not_bring_back_a_card_deleted_while_it_ran() {
+        let snapshot = vec![card("a", "backlog"), card("gone", "backlog")];
+        let refreshed = vec![card("a", "backlog"), card("gone", "waiting")];
+        let mut current = vec![card("a", "backlog")];
+        merge_refresh(&snapshot, refreshed, &mut current);
+        assert_eq!(ids(&current), vec![("a".into(), "backlog".into())]);
+    }
+
+    #[test]
+    fn refresh_adds_discovered_cards_and_drops_ones_it_removed() {
+        let snapshot = vec![card("a", "backlog"), card("dup", "waiting")];
+        let refreshed = vec![card("a", "backlog"), card("found", "waiting")];
+        let mut current = snapshot.clone();
+        merge_refresh(&snapshot, refreshed, &mut current);
+        assert_eq!(ids(&current), vec![("a".into(), "backlog".into()), ("found".into(), "waiting".into())]);
+    }
+
+    #[test]
+    fn refresh_keeps_a_card_it_dropped_if_edited_meanwhile() {
+        let snapshot = vec![card("dup", "waiting")];
+        let mut current = vec![card("dup", "on_hold")];
+        merge_refresh(&snapshot, vec![], &mut current);
+        assert_eq!(ids(&current), vec![("dup".into(), "on_hold".into())]);
     }
 }
