@@ -860,54 +860,51 @@ async fn merge_cards(
     target_card_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    let mut links = state
-        .coordination_store
-        .read_links()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let source_idx = links
-        .iter()
-        .position(|l| l.id == source_card_id)
-        .ok_or_else(|| format!("source card {source_card_id} not found"))?;
-    let target_idx = links
-        .iter()
-        .position(|l| l.id == target_card_id)
-        .ok_or_else(|| format!("target card {target_card_id} not found"))?;
-
-    if let Some(reason) = merge_ops::merge_blocked(&links[source_idx], &links[target_idx]) {
-        return Err(reason);
-    }
-
-    // Snapshot source. Then mutate target in-place and drop source.
-    let source = links[source_idx].clone();
-
-    // If source has queued prompts the user might lose, log them.
-    if let Some(prompts) = &source.queued_prompts {
-        if !prompts.is_empty() {
-            logging::warn(
-                "merge",
-                &format!(
-                    "dropping {} queued prompt(s) from source card {}",
-                    prompts.len(),
-                    &source.id
-                ),
-            );
-        }
-    }
-
-    merge_ops::merge_into_target(&source, &mut links[target_idx]);
-
-    // Remove source (do this AFTER mutating target since target_idx > source_idx
-    // would shift; use retain to avoid index bookkeeping).
-    let source_id = source.id.clone();
-    links.retain(|l| l.id != source_id);
-
+    // One read-modify-write under the store's lock, so a refresh or another
+    // card change can't land in between.
     state
         .coordination_store
-        .write_links(&links)
+        .modify_links(|links| -> Result<(), String> {
+            let source_idx = links
+                .iter()
+                .position(|l| l.id == source_card_id)
+                .ok_or_else(|| format!("source card {source_card_id} not found"))?;
+            let target_idx = links
+                .iter()
+                .position(|l| l.id == target_card_id)
+                .ok_or_else(|| format!("target card {target_card_id} not found"))?;
+
+            if let Some(reason) = merge_ops::merge_blocked(&links[source_idx], &links[target_idx]) {
+                return Err(reason);
+            }
+
+            // Snapshot source. Then mutate target in-place and drop source.
+            let source = links[source_idx].clone();
+
+            // If source has queued prompts the user might lose, log them.
+            if let Some(prompts) = &source.queued_prompts {
+                if !prompts.is_empty() {
+                    logging::warn(
+                        "merge",
+                        &format!(
+                            "dropping {} queued prompt(s) from source card {}",
+                            prompts.len(),
+                            &source.id
+                        ),
+                    );
+                }
+            }
+
+            merge_ops::merge_into_target(&source, &mut links[target_idx]);
+
+            // Remove source (do this AFTER mutating target since target_idx > source_idx
+            // would shift; use retain to avoid index bookkeeping).
+            let source_id = source.id.clone();
+            links.retain(|l| l.id != source_id);
+            Ok(())
+        })
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())??;
 
     logging::info(
         "merge",
@@ -931,7 +928,7 @@ async fn move_card_to_project(
     target_project_path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    let mut links = state
+    let links = state
         .coordination_store
         .read_links()
         .await
@@ -969,18 +966,23 @@ async fn move_card_to_project(
         None
     };
 
-    let link = &mut links[idx];
-    link.project_path = Some(target_project_path);
-    if let (Some(sl), Some(new_path)) = (link.session_link.as_mut(), new_session_path) {
-        sl.session_path = Some(new_path);
-    }
-    link.updated_at = chrono::Utc::now();
-
+    // Apply the change to the links as they are now: moving the transcript
+    // took a while, and a refresh may have written meanwhile.
     state
         .coordination_store
-        .write_links(&links)
+        .modify_links(|links| {
+            let Some(link) = links.iter_mut().find(|l| l.id == card_id) else {
+                return Err(format!("card {card_id} not found"));
+            };
+            link.project_path = Some(target_project_path);
+            if let (Some(sl), Some(new_path)) = (link.session_link.as_mut(), new_session_path) {
+                sl.session_path = Some(new_path);
+            }
+            link.updated_at = chrono::Utc::now();
+            Ok(())
+        })
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1681,7 +1683,29 @@ fn start_pr_polling(app: tauri::AppHandle) {
                 }
 
                 if changed {
-                    if let Err(e) = state.coordination_store.write_links(&updated_links).await {
+                    // Write only the PR links this poll changed, onto the links
+                    // as they are now: the fetches took a while, and a refresh
+                    // or a card change may have written meanwhile.
+                    let as_json = |v: &Vec<coordination_store::PrLink>| serde_json::to_value(v).ok();
+                    let before: std::collections::HashMap<&str, _> =
+                        links.iter().map(|l| (l.id.as_str(), as_json(&l.pr_links))).collect();
+                    let new_prs: std::collections::HashMap<String, Vec<coordination_store::PrLink>> =
+                        updated_links
+                            .into_iter()
+                            .filter(|l| before.get(l.id.as_str()) != Some(&as_json(&l.pr_links)))
+                            .map(|l| (l.id, l.pr_links))
+                            .collect();
+                    if let Err(e) = state
+                        .coordination_store
+                        .modify_links(|fresh| {
+                            for l in fresh.iter_mut() {
+                                if let Some(prs) = new_prs.get(&l.id) {
+                                    l.pr_links = prs.clone();
+                                }
+                            }
+                        })
+                        .await
+                    {
                         logging::error("pr-poll", &format!("failed to write links: {e}"));
                     }
                     // Trigger a board refresh so the UI sees the new PR data
@@ -1799,9 +1823,9 @@ fn start_issue_polling(app: tauri::AppHandle) {
                         let project_roots: std::collections::HashSet<&str> =
                             project_filters.iter().map(|(r, _)| r.as_str()).collect();
 
-                        let mut links_to_update = existing_links.clone();
-                        let before_len = links_to_update.len();
-                        links_to_update.retain(|l| {
+                        // Applied to the links as they are now, not the copy
+                        // read before the fetches.
+                        let keep = |l: &coordination_store::Link| {
                             // Keep everything that isn't a stale github issue in backlog
                             if l.source != "github_issue" || l.column != "backlog" {
                                 return true;
@@ -1819,17 +1843,21 @@ fn start_issue_polling(app: tauri::AppHandle) {
                             };
                             let key = format!("{}:{}", proj, issue_num);
                             fetched_keys.contains(&key)
-                        });
+                        };
 
-                        if links_to_update.len() != before_len {
-                            if let Err(e) = state
+                        if existing_links.iter().any(|l| !keep(l)) {
+                            match state
                                 .coordination_store
-                                .write_links(&links_to_update)
+                                .modify_links(|fresh| {
+                                    let before_len = fresh.len();
+                                    fresh.retain(|l| keep(l));
+                                    fresh.len() != before_len
+                                })
                                 .await
                             {
-                                logging::error("issue-poll", &format!("failed to write links: {e}"));
+                                Ok(removed) => changed |= removed,
+                                Err(e) => logging::error("issue-poll", &format!("failed to write links: {e}")),
                             }
-                            changed = true;
                         }
 
                         if changed {

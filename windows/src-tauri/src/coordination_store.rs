@@ -337,6 +337,9 @@ pub fn kanban_data_dir() -> PathBuf {
 
 pub struct CoordinationStore {
     file_path: PathBuf,
+    /// Held for every read-modify-write of links.json, so two changes can't
+    /// interleave and lose one another (as macOS's CoordinationStore actor).
+    write_lock: tokio::sync::Mutex<()>,
 }
 
 impl CoordinationStore {
@@ -344,6 +347,7 @@ impl CoordinationStore {
         let base = base_path.unwrap_or_else(|| kanban_data_dir());
         Self {
             file_path: base.join("links.json"),
+            write_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -380,7 +384,30 @@ impl CoordinationStore {
         Ok(vec![])
     }
 
+    /// Replace links.json wholesale. Prefer `modify_links`, which applies a
+    /// change to the current file instead of to a copy read earlier.
     pub async fn write_links(&self, links: &[Link]) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
+        self.save_links(links).await
+    }
+
+    /// Atomic read-modify-write: reads the current links, applies `transform`,
+    /// writes them back if they changed, all under the store's lock (as macOS
+    /// `modifyLinks`).
+    /// `transform` must not call back into the store.
+    pub async fn modify_links<R>(&self, transform: impl FnOnce(&mut Vec<Link>) -> R) -> Result<R> {
+        let _guard = self.write_lock.lock().await;
+        let mut links = self.read_links().await?;
+        let before = serde_json::to_vec(&links).context("serialize links")?;
+        let out = transform(&mut links);
+        // Skip the write when nothing changed (refresh calls this every poll).
+        if serde_json::to_vec(&links).context("serialize links")? != before {
+            self.save_links(&links).await?;
+        }
+        Ok(out)
+    }
+
+    async fn save_links(&self, links: &[Link]) -> Result<()> {
         if let Some(parent) = self.file_path.parent() {
             fs::create_dir_all(parent).await.context("create .kanban-code dir")?;
         }
@@ -395,16 +422,22 @@ impl CoordinationStore {
     }
 
     pub async fn upsert_link(&self, link: &Link) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
+        self.upsert_unlocked(link).await
+    }
+
+    async fn upsert_unlocked(&self, link: &Link) -> Result<()> {
         let mut links = self.read_links().await?;
         if let Some(idx) = links.iter().position(|l| l.id == link.id) {
             links[idx] = link.clone();
         } else {
             links.push(link.clone());
         }
-        self.write_links(&links).await
+        self.save_links(&links).await
     }
 
     pub async fn move_card(&self, card_id: &str, column: &str) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
         let mut links = self.read_links().await?;
         if let Some(link) = links.iter_mut().find(|l| l.id == card_id) {
             link.column = column.to_string();
@@ -418,7 +451,7 @@ impl CoordinationStore {
             }
             link.updated_at = Utc::now();
         }
-        self.write_links(&links).await
+        self.save_links(&links).await
     }
 
     pub async fn create_card(
@@ -432,7 +465,8 @@ impl CoordinationStore {
     ) -> Result<Link> {
         let mut link = Link::new_card(prompt, title, project, assistant_id, prompt_image_paths);
         link.api_service_id = api_service_id;
-        self.upsert_link(&link).await?;
+        let _guard = self.write_lock.lock().await;
+        self.upsert_unlocked(&link).await?;
         Ok(link)
     }
 
@@ -443,12 +477,13 @@ impl CoordinationStore {
         card_id: &str,
         api_service_id: Option<String>,
     ) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
         let mut links = self.read_links().await?;
         if let Some(link) = links.iter_mut().find(|l| l.id == card_id) {
             link.api_service_id = api_service_id;
             link.updated_at = Utc::now();
         }
-        self.write_links(&links).await
+        self.save_links(&links).await
     }
 
     pub async fn set_card_runtime(
@@ -456,21 +491,24 @@ impl CoordinationStore {
         card_id: &str,
         runtime: Option<CardRuntime>,
     ) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
         let mut links = self.read_links().await?;
         if let Some(link) = links.iter_mut().find(|l| l.id == card_id) {
             link.card_runtime = runtime;
             link.updated_at = Utc::now();
         }
-        self.write_links(&links).await
+        self.save_links(&links).await
     }
 
     pub async fn remove_link(&self, card_id: &str) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
         let mut links = self.read_links().await?;
         links.retain(|l| l.id != card_id);
-        self.write_links(&links).await
+        self.save_links(&links).await
     }
 
     pub async fn archive_link(&self, card_id: &str) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
         let mut links = self.read_links().await?;
         if let Some(link) = links.iter_mut().find(|l| l.id == card_id) {
             link.manually_archived = true;
@@ -479,17 +517,18 @@ impl CoordinationStore {
             link.pinned_sort_order = None;
             link.updated_at = Utc::now();
         }
-        self.write_links(&links).await
+        self.save_links(&links).await
     }
 
     pub async fn rename_link(&self, card_id: &str, name: &str) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
         let mut links = self.read_links().await?;
         if let Some(link) = links.iter_mut().find(|l| l.id == card_id) {
             link.name = Some(name.to_string());
             link.manual_overrides.name = true;
             link.updated_at = Utc::now();
         }
-        self.write_links(&links).await
+        self.save_links(&links).await
     }
 
     pub async fn add_queued_prompt(
@@ -497,13 +536,14 @@ impl CoordinationStore {
         card_id: &str,
         prompt: QueuedPrompt,
     ) -> Result<QueuedPrompt> {
+        let _guard = self.write_lock.lock().await;
         let mut links = self.read_links().await?;
         if let Some(link) = links.iter_mut().find(|l| l.id == card_id) {
             let prompts = link.queued_prompts.get_or_insert_with(Vec::new);
             prompts.push(prompt.clone());
             link.updated_at = Utc::now();
         }
-        self.write_links(&links).await?;
+        self.save_links(&links).await?;
         Ok(prompt)
     }
 
@@ -515,6 +555,7 @@ impl CoordinationStore {
         send_automatically: bool,
         image_paths: Option<Option<Vec<String>>>,
     ) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
         let mut links = self.read_links().await?;
         if let Some(link) = links.iter_mut().find(|l| l.id == card_id) {
             if let Some(prompts) = &mut link.queued_prompts {
@@ -532,7 +573,7 @@ impl CoordinationStore {
             }
             link.updated_at = Utc::now();
         }
-        self.write_links(&links).await
+        self.save_links(&links).await
     }
 
     /// Create a card from a GitHub issue, returning the new Link.
@@ -582,11 +623,13 @@ impl CoordinationStore {
             browser_tabs: None,
             card_runtime: None,
         };
-        self.upsert_link(&link).await?;
+        let _guard = self.write_lock.lock().await;
+        self.upsert_unlocked(&link).await?;
         Ok(link)
     }
 
     pub async fn remove_queued_prompt(&self, card_id: &str, prompt_id: &str) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
         let mut links = self.read_links().await?;
         if let Some(link) = links.iter_mut().find(|l| l.id == card_id) {
             if let Some(prompts) = &mut link.queued_prompts {
@@ -597,20 +640,21 @@ impl CoordinationStore {
             }
             link.updated_at = Utc::now();
         }
-        self.write_links(&links).await
+        self.save_links(&links).await
     }
 
     /// Persist a manual ordering by assigning each card its index in
     /// `ordered_ids` as `sort_order`. Intentionally does NOT bump `updated_at`,
     /// so reordering never reshuffles time-based sorting elsewhere.
     pub async fn reorder_cards(&self, ordered_ids: &[String]) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
         let mut links = self.read_links().await?;
         for (idx, id) in ordered_ids.iter().enumerate() {
             if let Some(link) = links.iter_mut().find(|l| &l.id == id) {
                 link.sort_order = Some(idx as f64);
             }
         }
-        self.write_links(&links).await
+        self.save_links(&links).await
     }
 
     /// Enqueues a self-compact nudge with dedup. Skips the write when the
@@ -627,6 +671,7 @@ impl CoordinationStore {
         body: String,
         threshold_tokens: i64,
     ) -> Result<bool> {
+        let _guard = self.write_lock.lock().await;
         let mut links = self.read_links().await?;
         let Some(link) = links.iter_mut().find(|l| l.id == card_id) else {
             return Ok(false);
@@ -648,7 +693,7 @@ impl CoordinationStore {
             .get_or_insert_with(Vec::new)
             .push(prompt);
         link.updated_at = Utc::now();
-        self.write_links(&links).await?;
+        self.save_links(&links).await?;
         Ok(true)
     }
 
@@ -656,6 +701,7 @@ impl CoordinationStore {
     /// taken verbatim — input validation (scheme prefix, etc.) belongs to
     /// the caller so we can stay schema-only here.
     pub async fn add_browser_tab(&self, card_id: &str, url: String) -> Result<Option<BrowserTabInfo>> {
+        let _guard = self.write_lock.lock().await;
         let mut links = self.read_links().await?;
         let Some(link) = links.iter_mut().find(|l| l.id == card_id) else {
             return Ok(None);
@@ -664,7 +710,7 @@ impl CoordinationStore {
         let tabs = link.browser_tabs.get_or_insert_with(Vec::new);
         tabs.push(tab.clone());
         link.updated_at = Utc::now();
-        self.write_links(&links).await?;
+        self.save_links(&links).await?;
         Ok(Some(tab))
     }
 
@@ -673,6 +719,7 @@ impl CoordinationStore {
     /// `None` so an empty browser panel matches the never-opened state on
     /// disk (no `browserTabs` key emitted).
     pub async fn remove_browser_tab(&self, card_id: &str, tab_id: &str) -> Result<bool> {
+        let _guard = self.write_lock.lock().await;
         let mut links = self.read_links().await?;
         let Some(link) = links.iter_mut().find(|l| l.id == card_id) else {
             return Ok(false);
@@ -686,7 +733,7 @@ impl CoordinationStore {
                 link.browser_tabs = None;
             }
             link.updated_at = Utc::now();
-            self.write_links(&links).await?;
+            self.save_links(&links).await?;
         }
         Ok(removed)
     }
@@ -696,6 +743,7 @@ impl CoordinationStore {
     /// that aren't in `ordered_ids` keep their relative order at the end.
     /// Mirrors `reorder_cards` semantics — does NOT bump `updated_at`.
     pub async fn reorder_browser_tabs(&self, card_id: &str, ordered_ids: &[String]) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
         let mut links = self.read_links().await?;
         let Some(link) = links.iter_mut().find(|l| l.id == card_id) else { return Ok(()) };
         let Some(tabs) = link.browser_tabs.as_mut() else { return Ok(()) };
@@ -705,7 +753,7 @@ impl CoordinationStore {
             .map(|(idx, id)| (id, idx))
             .collect();
         tabs.sort_by_key(|t| id_index.get(&t.id).copied().unwrap_or(usize::MAX));
-        self.write_links(&links).await
+        self.save_links(&links).await
     }
 
     /// Patch a tab's url and/or title. None on a field means "leave alone";
@@ -718,6 +766,7 @@ impl CoordinationStore {
         url: Option<String>,
         title: Option<Option<String>>,
     ) -> Result<bool> {
+        let _guard = self.write_lock.lock().await;
         let mut links = self.read_links().await?;
         let Some(link) = links.iter_mut().find(|l| l.id == card_id) else { return Ok(false) };
         let Some(tabs) = link.browser_tabs.as_mut() else { return Ok(false) };
@@ -733,7 +782,7 @@ impl CoordinationStore {
             tab.title = new_title;
         }
         link.updated_at = Utc::now();
-        self.write_links(&links).await?;
+        self.save_links(&links).await?;
         Ok(true)
     }
 
@@ -742,6 +791,7 @@ impl CoordinationStore {
     /// new pin lands at the top, matching macOS). Unpinning clears both
     /// fields. No-op when the requested state already matches.
     pub async fn set_card_pinned(&self, card_id: &str, is_pinned: bool) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
         let mut links = self.read_links().await?;
         let first_order = links
             .iter()
@@ -764,18 +814,19 @@ impl CoordinationStore {
             }
             link.updated_at = Utc::now();
         }
-        self.write_links(&links).await
+        self.save_links(&links).await
     }
 
     /// Stamp `last_opened_at = now` on the named card. Mirrors macOS
     /// `selectCard` side effect. Intentionally does NOT bump `updated_at` so
     /// merely opening a card doesn't push it to the top of time-based sorts.
     pub async fn mark_card_opened(&self, card_id: &str) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
         let mut links = self.read_links().await?;
         if let Some(link) = links.iter_mut().find(|l| l.id == card_id) {
             link.last_opened_at = Some(Utc::now());
         }
-        self.write_links(&links).await
+        self.save_links(&links).await
     }
 
     /// Persist a manual ordering of pinned cards by assigning each its index
@@ -783,6 +834,7 @@ impl CoordinationStore {
     /// NOT bump `updated_at` so the sort doesn't ripple into time-based
     /// presentations elsewhere.
     pub async fn reorder_pinned_cards(&self, ordered_ids: &[String]) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
         let mut links = self.read_links().await?;
         for (idx, id) in ordered_ids.iter().enumerate() {
             if let Some(link) = links.iter_mut().find(|l| &l.id == id) {
@@ -791,7 +843,7 @@ impl CoordinationStore {
                 }
             }
         }
-        self.write_links(&links).await
+        self.save_links(&links).await
     }
 }
 
@@ -1028,6 +1080,41 @@ mod tests {
         let stored = &after[0].browser_tabs.as_ref().unwrap()[0];
         assert!(stored.title.is_none());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_changes_are_not_lost() {
+        // Without the store's lock each change read links.json and the last
+        // write won: cards created alongside each other went missing.
+        let base = tmp_base();
+        let store = std::sync::Arc::new(CoordinationStore::new(Some(base.clone())));
+        let mut tasks = Vec::new();
+        for i in 0..24 {
+            let store = store.clone();
+            tasks.push(tokio::spawn(async move {
+                store
+                    .create_card(format!("p{i}"), None, "/tmp/p".into(), "claude".into(), None, None)
+                    .await
+                    .unwrap();
+            }));
+        }
+        for i in 0..12 {
+            let store = store.clone();
+            tasks.push(tokio::spawn(async move {
+                store
+                    .modify_links(|links| {
+                        if let Some(l) = links.first_mut() {
+                            l.name = Some(format!("renamed {i}"));
+                        }
+                    })
+                    .await
+                    .unwrap();
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap();
+        }
+        assert_eq!(store.read_links().await.unwrap().len(), 24);
     }
 
     #[tokio::test]
