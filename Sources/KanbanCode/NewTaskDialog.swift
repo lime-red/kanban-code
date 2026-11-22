@@ -378,13 +378,17 @@ struct NewTaskDialog: View {
     // MARK: - Computed
 
     private var resolvedProjectPath: String? {
-        if projects.isEmpty {
-            return customPath.isEmpty ? nil : customPath
-        }
-        if selectedProjectPath == Self.customPathSentinel {
-            return customPath.isEmpty ? nil : customPath
+        if projects.isEmpty || selectedProjectPath == Self.customPathSentinel {
+            return typedProjectPath
         }
         return selectedProjectPath.isEmpty ? nil : selectedProjectPath
+    }
+
+    /// The typed path as the launch uses it: the launch quotes the path for
+    /// the shell, so a `~` there is never expanded.
+    private var typedProjectPath: String? {
+        let trimmed = customPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : (trimmed as NSString).expandingTildeInPath
     }
 
     private var selectedProject: Project? {
