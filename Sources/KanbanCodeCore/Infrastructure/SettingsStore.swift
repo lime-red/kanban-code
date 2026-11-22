@@ -621,6 +621,21 @@ public actor SettingsStore {
         try write(settings)
     }
 
+    /// Adds a project folder, as typed, to the list of an ssh machine. False
+    /// when the machine is not configured or already lists the folder.
+    @discardableResult
+    public func addProjectFolder(_ folder: String, toSshMachine name: String) throws -> Bool {
+        var settings = try read()
+        guard var boxd = settings.boxd,
+              let index = boxd.sshMachines.firstIndex(where: { $0.name == name }) else { return false }
+        let machine = boxd.sshMachines[index]
+        guard !machine.absoluteProjectFolders.contains(machine.absoluteFolder(folder)) else { return false }
+        boxd.sshMachines[index].projectFolders.append(folder)
+        settings.boxd = boxd
+        try write(settings)
+        return true
+    }
+
     /// Update an existing project (matched by path).
     public func updateProject(_ project: Project) throws {
         var settings = try read()

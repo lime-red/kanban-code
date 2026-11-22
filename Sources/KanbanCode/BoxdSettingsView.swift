@@ -44,6 +44,9 @@ struct BoxdSettingsView: View {
     /// Edited in the Assistants tab; carried through the save unchanged.
     @State private var claudeOAuthToken = ""
     @State private var sshMachines: [SshMachine] = []
+    /// The Projects field of each machine as typed, so a trailing comma
+    /// survives until the next folder is typed.
+    @State private var folderTexts: [UUID: String] = [:]
     @State private var sshReachability: [String: Bool] = [:]
 
     @State private var loaded = false
@@ -78,7 +81,7 @@ struct BoxdSettingsView: View {
                     Color.clear.frame(width: 8, height: 1)
                     Text("Name").frame(width: 130, alignment: .leading)
                     Text("Ssh target").frame(maxWidth: .infinity, alignment: .leading)
-                    Text("Repositories").frame(width: 130, alignment: .leading)
+                    Text("Clone Mac projects to").frame(width: 130, alignment: .leading)
                     Color.clear.frame(width: 16, height: 1)
                 }
                 .font(.caption)
@@ -104,6 +107,7 @@ struct BoxdSettingsView: View {
                             .textFieldStyle(.roundedBorder)
                             .font(.system(.body, design: .monospaced))
                             .frame(width: 130)
+                            .help("When you run a project from this Mac here, it is cloned from its git remote into this folder, as <folder>/<repo name>. Unpushed work on the Mac is not copied.")
                         Button {
                             sshMachines.removeAll { $0.id == machine.id }
                             scheduleSave()
@@ -111,6 +115,19 @@ struct BoxdSettingsView: View {
                             Image(systemName: "minus.circle")
                         }
                         .buttonStyle(.borderless)
+                    }
+                    HStack(spacing: 8) {
+                        Color.clear.frame(width: 8, height: 1)
+                        Text("Folders already here")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 130, alignment: .trailing)
+                        TextField("Projects", text: folderText(for: $machine), prompt: Text("~/my-project, /srv/other"))
+                            .labelsHidden()
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.body, design: .monospaced))
+                            .help("Folders that already exist on this machine, separated by commas. New Task offers them when the card runs here; nothing is cloned or copied, the card runs in the folder as it is.")
+                        Color.clear.frame(width: 16, height: 1)
                     }
                     if let master = master(of: machine) {
                         Text("Runs Kanban Code (paired in Remote Control > Peers): cards started here are owned by its server and keep going while this Mac is off. \(master.masterOnline ? "Online." : "Offline.")")
@@ -132,7 +149,7 @@ struct BoxdSettingsView: View {
                     .disabled(sshMachines.isEmpty)
             }
 
-            Text("Each machine needs tmux, git, node and the coding assistant, and rush to run cards on rush. Repositories are cloned into the folder on the right. Cards share the machine, the app never stops it.")
+            Text("Two ways to run a card on a machine. A project from this Mac is cloned from its git remote into “Clone Mac projects to” (only pushed work arrives, plus the files to copy below). A folder listed under “Folders already here” is used as it is. Each machine needs tmux, git, node and the coding assistant, and rush to run cards on rush. Cards share the machine; the app never stops it.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }
@@ -344,12 +361,26 @@ struct BoxdSettingsView: View {
                     name: $0.name.trimmingCharacters(in: .whitespacesAndNewlines),
                     target: $0.target.trimmingCharacters(in: .whitespacesAndNewlines),
                     repoRoot: $0.repoRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        ? SshMachine.defaultRepoRoot : $0.repoRoot.trimmingCharacters(in: .whitespacesAndNewlines))
+                        ? SshMachine.defaultRepoRoot : $0.repoRoot.trimmingCharacters(in: .whitespacesAndNewlines),
+                    projectFolders: $0.projectFolders)
             }
         )
     }
 
     // MARK: - Ssh machines
+
+    private func folderText(for machine: Binding<SshMachine>) -> Binding<String> {
+        Binding(
+            get: { folderTexts[machine.wrappedValue.id] ?? machine.wrappedValue.projectFolders.joined(separator: ", ") },
+            set: { text in
+                folderTexts[machine.wrappedValue.id] = text
+                machine.wrappedValue.projectFolders = text
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+            }
+        )
+    }
 
     private func probeSshMachines() async {
         for machine in sshMachines where machine.isComplete {

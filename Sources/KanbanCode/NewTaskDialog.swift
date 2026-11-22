@@ -43,6 +43,8 @@ struct NewTaskDialog: View {
     @State private var machineChoice: BoxdMachineChoice = .newMachine
     @AppStorage("dangerouslySkipPermissions") private var dangerouslySkipPermissions = true
     @AppStorage("lastSelectedProjectPath") private var lastSelectedProjectPath = ""
+    /// The last project of this Mac, to go back to from a machine's folders.
+    @AppStorage("lastLocalProjectPath") private var lastLocalProjectPath = ""
 
     private static let customPathSentinel = "__custom__"
 
@@ -68,22 +70,45 @@ struct NewTaskDialog: View {
                 onEscape: { isPresented = false }
             )
 
+            // Where the card runs comes first: a machine offers its own
+            // project folders.
+            if picksMachineFirst, let remoteOptions {
+                RunTargetPicker(remote: remoteOptions, runRemotely: $runRemotely, machineChoice: $machineChoice)
+            }
+
             // Project picker
-            if projects.isEmpty {
-                TextField("Project path (optional)", text: $customPath)
+            if projects.isEmpty && machineFolders.isEmpty {
+                TextField(customPathPrompt + " (optional)", text: $customPath)
                     .textFieldStyle(.roundedBorder)
                     .font(.app(.caption))
             } else {
                 Picker("Project", selection: $selectedProjectPath) {
-                    ForEach(projects) { project in
-                        Text(project.name).tag(project.path)
+                    if let machine = selectedSshMachine {
+                        if !machineFolders.isEmpty {
+                            Section("Already on \(machine.name)") {
+                                ForEach(machineFolders, id: \.self) { folder in
+                                    Text(Self.folderLabel(folder, machine: machine)).tag(folder)
+                                }
+                            }
+                        }
+                        if !projects.isEmpty {
+                            Section("From this Mac (cloned to \(machine.name))") {
+                                ForEach(projects) { project in
+                                    Text(project.name).tag(project.path)
+                                }
+                            }
+                        }
+                    } else {
+                        ForEach(projects) { project in
+                            Text(project.name).tag(project.path)
+                        }
                     }
                     Divider()
                     Text("Custom path...").tag(Self.customPathSentinel)
                 }
 
                 if selectedProjectPath == Self.customPathSentinel {
-                    TextField("Project path", text: $customPath)
+                    TextField(customPathPrompt, text: $customPath)
                         .textFieldStyle(.roundedBorder)
                         .font(.app(.caption))
                 }
@@ -214,6 +239,16 @@ struct NewTaskDialog: View {
                 selectedAssistant = first
             }
             applyProjectDefaults()
+            // The last project was a folder on a machine: that machine again,
+            // unless the board has a project of this Mac selected.
+            if !projects.contains(where: { $0.path == defaultProjectPath }),
+               let machine = remoteOptions?.sshMachines.first(where: {
+                   $0.absoluteProjectFolders.contains(lastSelectedProjectPath)
+               }) {
+                machineChoice = .existing(machine.name)
+                runRemotely = true
+                selectedProjectPath = lastSelectedProjectPath
+            }
             command = commandPreview
             titleFocused = true
         }
@@ -235,17 +270,19 @@ struct NewTaskDialog: View {
         }
         .onChange(of: runRemotely) {
             rememberRunRemotely()
+            followRunTarget()
             if !commandEdited { command = commandPreview }
         }
         .onChange(of: machineChoice) {
+            followRunTarget()
             if !commandEdited { command = commandPreview }
         }
         .onChange(of: selectedProjectPath) {
-            applyProjectDefaults()
+            applyProjectDefaults(includingRunTarget: !picksMachineFirst)
             if !commandEdited { command = commandPreview }
         }
         .onChange(of: customPath) {
-            applyProjectDefaults()
+            applyProjectDefaults(includingRunTarget: !picksMachineFirst)
             if !commandEdited { command = commandPreview }
         }
         .onChange(of: dangerouslySkipPermissions) {
@@ -262,8 +299,8 @@ struct NewTaskDialog: View {
 
     @ViewBuilder
     private var remoteSection: some View {
-        if remoteMode.runsOnMachines, canRunRemotely, let remoteOptions {
-            RunTargetPicker(remote: remoteOptions, runRemotely: $runRemotely, machineChoice: $machineChoice)
+        if picksMachineFirst {
+            // Shown above the project picker.
         } else {
             Toggle(remoteToggleLabel, isOn: canRunRemotely ? $runRemotely : .constant(false))
                 .font(.app(.callout))
@@ -307,8 +344,31 @@ struct NewTaskDialog: View {
         }
     }
 
-    /// Reads the toggle defaults of the selected project.
-    private func applyProjectDefaults() {
+    /// The run target was picked first, so the project follows it: a machine
+    /// with project folders selects one of them (the last one used there),
+    /// and leaving it drops a folder that is on another machine.
+    private func followRunTarget() {
+        guard picksMachineFirst, selectedProjectPath != Self.customPathSentinel else { return }
+        let folders = machineFolders
+        if let machine = selectedSshMachine, !folders.isEmpty {
+            guard !folders.contains(selectedProjectPath) else { return }
+            let last = UserDefaults.standard.string(forKey: Self.lastFolderKey(machine.name))
+            selectedProjectPath = last.flatMap { folders.contains($0) ? $0 : nil } ?? folders[0]
+        } else if !projects.contains(where: { $0.path == selectedProjectPath }) {
+            selectedProjectPath = projects.first(where: { $0.path == lastLocalProjectPath })?.path
+                ?? projects.first?.path ?? ""
+        }
+    }
+
+    /// Reads the toggle defaults of the selected project. Once the run target
+    /// is picked first, a project change leaves it alone.
+    private func applyProjectDefaults(includingRunTarget: Bool = true) {
+        if !includingRunTarget {
+            if let path = resolvedProjectPath {
+                createWorktree = UserDefaults.standard.object(forKey: "createWorktree_\(path)") as? Bool ?? true
+            }
+            return
+        }
         let fallbackMachine: BoxdMachineChoice = remoteMode == .ssh
             ? (remoteOptions?.allMachines.first.map { BoxdMachineChoice.existing($0.name) } ?? .newMachine)
             : .newMachine
@@ -347,13 +407,38 @@ struct NewTaskDialog: View {
 
     private func submitForm() {
         guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        // A path typed for a machine joins its project folders: that is what
+        // makes the launch run in it as written, and it is offered next time.
+        // It is saved before the launch reads the settings.
+        let typed = customPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let machine = selectedSshMachine, resolvedProjectPath == typedProjectPath, !typed.isEmpty,
+           !machineFolders.contains(machine.absoluteFolder(typed)) {
+            Task {
+                if (try? await settingsStore.addProjectFolder(typed, toSshMachine: machine.name)) == true {
+                    NotificationCenter.default.post(name: .kanbanCodeSettingsChanged, object: nil)
+                }
+                deliver()
+            }
+            return
+        }
+        deliver()
+    }
+
+    private func deliver() {
         let proj = resolvedProjectPath
         let titleOrNil = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : title.trimmingCharacters(in: .whitespacesAndNewlines)
         if let proj { lastSelectedProjectPath = proj }
+        if let proj, projects.contains(where: { $0.path == proj }) { lastLocalProjectPath = proj }
         if runsOnBoxd {
             onMachineChoice(machineChoice)
             if remoteOptions?.cardMachine == nil, let proj {
                 RemoteLaunchOptions.rememberMachineChoice(machineChoice, projectPath: proj)
+            }
+            if let machine = selectedSshMachine, let proj, machineFolders.contains(proj) {
+                // A folder of the machine only runs there: a later launch of
+                // the card offers the machine.
+                RemoteLaunchOptions.rememberRunRemotely(true, mode: remoteMode, projectPath: proj)
+                UserDefaults.standard.set(proj, forKey: Self.lastFolderKey(machine.name))
             }
         }
         if startImmediately {
@@ -378,18 +463,56 @@ struct NewTaskDialog: View {
     // MARK: - Computed
 
     private var resolvedProjectPath: String? {
-        if projects.isEmpty || selectedProjectPath == Self.customPathSentinel {
+        if (projects.isEmpty && machineFolders.isEmpty) || selectedProjectPath == Self.customPathSentinel {
             return typedProjectPath
         }
         return selectedProjectPath.isEmpty ? nil : selectedProjectPath
     }
 
     /// The typed path as the launch uses it: the launch quotes the path for
-    /// the shell, so a `~` there is never expanded.
+    /// the shell, so a `~` there is never expanded. On a machine, `~` is the
+    /// home there.
     private var typedProjectPath: String? {
         let trimmed = customPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : (trimmed as NSString).expandingTildeInPath
+        guard !trimmed.isEmpty else { return nil }
+        if let machine = selectedSshMachine { return machine.absoluteFolder(trimmed) }
+        return (trimmed as NSString).expandingTildeInPath
     }
+
+    /// The run target is offered before the project: the card runs on ssh
+    /// machines or boxd.
+    private var picksMachineFirst: Bool {
+        remoteMode.runsOnMachines && canRunRemotely && remoteOptions != nil
+    }
+
+    /// The ssh machine the card runs on, when it runs on one.
+    private var selectedSshMachine: SshMachine? {
+        guard runsOnBoxd, let name = machineChoice.machineName else { return nil }
+        return remoteOptions?.sshMachines.first(where: { $0.name == name })
+    }
+
+    /// Project folders of the selected machine, as the cards store them.
+    private var machineFolders: [String] {
+        selectedSshMachine?.absoluteProjectFolders ?? []
+    }
+
+    private var customPathPrompt: String {
+        selectedSshMachine.map { "Folder already on \($0.name), e.g. ~/my-project" } ?? "Project path"
+    }
+
+    /// `datatruss  ~/datatruss`: the folder name, then where it is.
+    private static func folderLabel(_ folder: String, machine: SshMachine) -> String {
+        let name = (folder as NSString).lastPathComponent
+        var shown = folder
+        if folder == machine.assumedHome {
+            shown = "~"
+        } else if folder.hasPrefix(machine.assumedHome + "/") {
+            shown = "~" + folder.dropFirst(machine.assumedHome.count)
+        }
+        return "\(name)  \(shown)"
+    }
+
+    private static func lastFolderKey(_ machine: String) -> String { "lastProjectFolder_\(machine)" }
 
     private var selectedProject: Project? {
         projects.first(where: { $0.path == resolvedProjectPath })
