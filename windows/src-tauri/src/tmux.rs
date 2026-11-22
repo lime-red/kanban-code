@@ -85,6 +85,12 @@ pub fn windows_path_to_wsl(p: &str) -> String {
     if p.starts_with('/') {
         return p.to_string();
     }
+    // Drive-letter paths map to WSL's default automount without asking WSL.
+    // `wslpath` run from the app has failed in practice, leaving hook.sh
+    // writing to a `C:\...` file name that nothing reads.
+    if let Some(mapped) = drive_path_to_wsl(p) {
+        return mapped;
+    }
     #[cfg(target_os = "windows")]
     {
         let out = Command::new("wsl.exe")
@@ -100,6 +106,28 @@ pub fn windows_path_to_wsl(p: &str) -> String {
         }
     }
     p.to_string()
+}
+
+/// `C:\Users\me\repo` (or `C:/Users/me/repo`) -> `/mnt/c/Users/me/repo`.
+/// `None` for anything that isn't a drive-letter path.
+fn drive_path_to_wsl(p: &str) -> Option<String> {
+    let mut chars = p.chars();
+    let drive = chars.next().filter(|c| c.is_ascii_alphabetic())?;
+    if chars.next() != Some(':') {
+        return None;
+    }
+    let rest = chars.as_str();
+    if !(rest.is_empty() || rest.starts_with('\\') || rest.starts_with('/')) {
+        return None; // `C:foo` is drive-relative; leave it to wslpath
+    }
+    let rest = rest.replace('\\', "/");
+    let rest = rest.trim_matches('/');
+    let drive = drive.to_ascii_lowercase();
+    Some(if rest.is_empty() {
+        format!("/mnt/{drive}")
+    } else {
+        format!("/mnt/{drive}/{rest}")
+    })
 }
 
 /// Ensure a detached session exists named `name`, cwd `cwd_wsl_path`, running
@@ -518,5 +546,19 @@ mod tests {
     #[test]
     fn needs_resubmit_no_prompt_glyph_is_false() {
         assert!(!needs_resubmit("just some stale capture"));
+    }
+
+    #[test]
+    fn drive_paths_map_to_mnt_without_wsl() {
+        assert_eq!(
+            windows_path_to_wsl(r"C:\Users\dev\AppData\Roaming\kanban-code\hook-events.jsonl"),
+            "/mnt/c/Users/dev/AppData/Roaming/kanban-code/hook-events.jsonl"
+        );
+        assert_eq!(windows_path_to_wsl(r"D:\code\my repo\"), "/mnt/d/code/my repo");
+        assert_eq!(windows_path_to_wsl("e:/x/y"), "/mnt/e/x/y");
+        assert_eq!(windows_path_to_wsl(r"C:\"), "/mnt/c");
+        assert_eq!(windows_path_to_wsl("/home/dev"), "/home/dev");
+        assert_eq!(drive_path_to_wsl("C:foo"), None);
+        assert_eq!(drive_path_to_wsl(r"\\wsl$\Ubuntu\home"), None);
     }
 }

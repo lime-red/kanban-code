@@ -38,6 +38,16 @@ import {
 import { useTheme, t } from "../theme";
 import type { Turn, TranscriptPage, QueuedPrompt, BrowserTabInfo } from "../types";
 import { replaceMarkersWithMarkdown } from "../lib/promptImageLayout";
+import { windowsPathToWsl, bashQuote } from "../lib/wslPath";
+
+// Whether tmux works inside WSL, asked once per app run and shared by every
+// drawer. Asking takes seconds while WSL is still starting, so a drawer that
+// asked for itself could launch before the answer and miss tmux.
+let tmuxCheck: Promise<boolean> | null = null;
+function checkTmux(): Promise<boolean> {
+  tmuxCheck ??= invoke<boolean>("tmux_available").then((v) => !!v, () => false);
+  return tmuxCheck;
+}
 import TerminalView from "./Terminal";
 import QueuedPromptDialog from "./QueuedPromptDialog";
 import QueuedPromptsBar from "./QueuedPromptsBar";
@@ -140,7 +150,8 @@ export default function CardDetailView() {
   // `tmux new-session -A -s <ksuid>` so closing the drawer detaches (the
   // tmux server keeps Claude running) and reopening reattaches with the
   // pane scrollback intact. When false, the legacy one-shot PTY is used.
-  const [tmuxAvailable, setTmuxAvailable] = useState(false);
+  // null until the shared check answers.
+  const [tmuxAvailable, setTmuxAvailable] = useState<boolean | null>(null);
 
   // Launch confirmation: when a fresh-launch card opens its terminal tab, we
   // show LaunchConfirmationDialog first so the user can tweak the prompt,
@@ -210,9 +221,7 @@ export default function CardDetailView() {
         setDefaultAPIServiceIds(s.defaultAPIServiceIds ?? {});
       })
       .catch(() => {});
-    invoke<boolean>("tmux_available")
-      .then((v) => setTmuxAvailable(!!v))
-      .catch(() => setTmuxAvailable(false));
+    void checkTmux().then(setTmuxAvailable);
   }, []);
 
   // Reset state when card changes. For cards with both a session AND a
@@ -475,7 +484,9 @@ export default function CardDetailView() {
   // instead of spawning a shell.
   const isWsl = cardRuntime === "wsl";
   // tmux requires WSL AND a working `tmux -V` inside it.
-  const useTmux = isWsl && tmuxAvailable;
+  const useTmux = isWsl && tmuxAvailable === true;
+  // A WSL card waits for that answer before starting its terminal.
+  const tmuxPending = isWsl && tmuxAvailable === null;
 
   const assistantId: AssistantId = (card.link.assistantId ?? "claude") as AssistantId;
   const cli = ASSISTANT_CLI[assistantId] ?? "claude";
@@ -555,7 +566,8 @@ export default function CardDetailView() {
         ...env,
       ];
       const envPrefix = allEnv.join(" ") + " ";
-      const cdCmd = cwd ? `cd ${cwd.replace(/ /g, "\\ ")} && ` : "";
+      // The project path is stored the Windows way; bash needs /mnt/c/...
+      const cdCmd = cwd ? `cd ${bashQuote(windowsPathToWsl(cwd))} && ` : "";
       const skipFlag = skipPerm ? " --dangerously-skip-permissions" : "";
       // Assistant-owned flags live after the optional `--` separator so a
       // launcher prefix (e.g. `ollama launch`) doesn't swallow them.
@@ -1240,6 +1252,11 @@ export default function CardDetailView() {
                   </button>
                 </div>
               )}
+              {tmuxPending ? (
+                <div className="flex-1 flex items-center justify-center text-[12px]" style={{ color: c.textDim }}>
+                  Starting WSL…
+                </div>
+              ) : (
               <TerminalView
                 ptyId={`term-${card.id}-${activeTermTab}`}
                 command={shellCommand}
@@ -1250,6 +1267,7 @@ export default function CardDetailView() {
                 initialScrollback={sessionId ? formatTranscriptScrollback(turns) : undefined}
                 killShellTree={shellCommand.length === 1 && shellCommand[0] === "cmd.exe"}
               />
+              )}
             </div>
           ) : activeTab === "terminal" && (
             <div className="flex flex-col items-center justify-center flex-1 gap-4 p-8">
