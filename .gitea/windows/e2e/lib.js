@@ -33,9 +33,20 @@ function makeContext(page, { shotDir, vmHost, sshArgs, vmDir, log }) {
       return execFileSync('ssh', [...sshArgs, vmHost,
         `powershell -NoProfile -ExecutionPolicy Bypass -File ${vmDir}\\${script}`], { encoding: 'utf8' });
     },
+    // Which card runtime the specs use: "windows" (cmd.exe) or "wsl" (tmux in WSL).
+    runtime: process.env.RUNTIME || 'windows',
     drawerClaudes() {
       const out = t.vm('drawer-claudes.ps1').trim();
       return out ? JSON.parse(out) : [];
+    },
+    // Claude Code processes running inside the card tmux sessions in WSL.
+    wslState() {
+      const out = t.vm('wsl-state.ps1').trim();
+      return out ? JSON.parse(out) : { sessions: [], claudes: [] };
+    },
+    // The card's Claude processes for the current runtime, as [{ pid }].
+    claudes() {
+      return t.runtime === 'wsl' ? t.wslState().claudes : t.drawerClaudes();
     },
     async card(name) {
       const st = await t.invoke('get_board_state');

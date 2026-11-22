@@ -8,9 +8,16 @@ module.exports = {
       const i = flat.indexOf('E2E card');
       return i < 0 ? null : flat.slice(i, i + 120);
     };
+    // Right-click until the menu is up: a board refresh re-rendering the card
+    // (just after it moved column) can swallow the first right-click.
     const menu = async () => {
-      await t.page.getByText('E2E card', { exact: true }).first().click({ button: 'right' });
-      await t.page.waitForTimeout(600);
+      const dateInput = t.page.getByLabel('Hold until date');
+      for (let i = 0; i < 4; i++) {
+        await t.page.getByText('E2E card', { exact: true }).first().click({ button: 'right' });
+        if (await dateInput.waitFor({ timeout: 2500 }).then(() => true, () => false)) return;
+        await t.page.keyboard.press('Escape');
+      }
+      throw new Error('the card menu did not open after 4 right-clicks');
     };
 
     await menu();
