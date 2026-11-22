@@ -256,6 +256,15 @@ public actor EffectHandler {
         case .recordHumanMessage(let cardId, let text, let at, let sessionId):
             humanMessageLog.append(cardId: cardId, HumanMessageRecord(at: at, text: text, sessionId: sessionId))
 
+        case .answerClaudeTrustPrompt(let cardId, let sessionName, let trust):
+            guard let tmux = tmuxAdapter else { return }
+            do {
+                try await ImageSender(tmux: tmux).answerTrustPrompt(sessionName: sessionName, trust: trust)
+            } catch {
+                KanbanCodeLog.warn("effect", "answering the trust screen in \(sessionName) failed: \(error)")
+                await dispatch(.claudeTrustPrompt(cardId: cardId, showing: true))
+            }
+
         case .sendPromptToTmux(let sessionName, let promptBody, let assistant, let human):
             await acquireSend(sessionName)
             defer { releaseSend(sessionName) }

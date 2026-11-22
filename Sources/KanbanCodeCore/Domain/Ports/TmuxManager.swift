@@ -36,6 +36,10 @@ public protocol TmuxManagerPort: Sendable {
     /// Submit the current prompt line.
     func submitPrompt(to sessionName: String) async throws
 
+    /// Press one key, named as tmux names it (`Down`, `Enter`), for
+    /// answering a menu in the pane.
+    func sendKey(to sessionName: String, key: String) async throws
+
     /// Capture the visible contents of a tmux pane.
     func capturePane(sessionName: String) async throws -> String
 
@@ -47,6 +51,10 @@ public protocol TmuxManagerPort: Sendable {
 }
 
 extension TmuxManagerPort {
+    public func sendKey(to sessionName: String, key: String) async throws {
+        throw TmuxError.keyNotSent(sessionName: sessionName, key: key)
+    }
+
     public func createSession(name: String, path: String, command: String?, environment: [String: String]) async throws {
         try await createSession(name: name, path: path, command: command)
     }
