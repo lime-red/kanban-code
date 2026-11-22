@@ -110,7 +110,7 @@ pub fn windows_path_to_wsl(p: &str) -> String {
 
 /// `C:\Users\me\repo` (or `C:/Users/me/repo`) -> `/mnt/c/Users/me/repo`.
 /// `None` for anything that isn't a drive-letter path.
-fn drive_path_to_wsl(p: &str) -> Option<String> {
+pub(crate) fn drive_path_to_wsl(p: &str) -> Option<String> {
     let mut chars = p.chars();
     let drive = chars.next().filter(|c| c.is_ascii_alphabetic())?;
     if chars.next() != Some(':') {
