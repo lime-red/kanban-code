@@ -22,6 +22,12 @@
 #   4. swift build and swift test run in the VM; output streams here and is
 #      saved under $LOG_DIR.
 #   5. The VM is stopped and deleted, whatever happened.
+#   6. The result is posted to Gitea as a commit status ("macos / build+test":
+#      pending, then success, failure or error), so it shows on the commit and
+#      any PR for it. The token (claude account, write:repository) is read from
+#      the login Keychain; without it, or for a SWIFT_TEST_ARGS run (a partial
+#      run shouldn't mark a commit green), nothing is posted. Store it with:
+#        security add-generic-password -a claude -s gitea-commit-status -w
 #
 # Settings (environment):
 #   TART_HOME   where Tart keeps images and VMs   (default: /Volumes/Build VMs/tart)
@@ -33,6 +39,7 @@
 #                    (e.g. "--filter ByteSearch")
 #   SERIAL_TESTS     regex of suites run one test at a time after the rest
 #   SKIP_TESTS       regex of tests not run in the VM (see below)
+#   REPORT_STATUS    0 to not post a commit status   (default: 1)
 #
 # Exit status: 0 if build and tests pass, 1 if they fail, 2 for setup problems.
 set -euo pipefail
@@ -76,8 +83,37 @@ vm="kc-ci-$stamp"
 log="$LOG_DIR/$stamp-${REF//\//_}-$short.log"
 work=$(mktemp -d)
 
+# Commit status on Gitea. The token goes to curl on stdin (-H @-), never on its
+# command line, where ps would show it.
+STATUS_API="https://gitea-hl.taild204f.ts.net/api/v1/repos/lime/kanban-code/statuses"
+STATUS_CONTEXT="macos / build+test"
+status_token=""
+if [ "${REPORT_STATUS:-1}" = 1 ] && [ -z "$SWIFT_TEST_ARGS" ]; then
+  status_token=$(security find-generic-password -a claude -s gitea-commit-status -w 2>/dev/null || true)
+  [ -n "$status_token" ] || echo "run-macos-ci: no gitea-commit-status token in the Keychain; not posting a commit status" >&2
+fi
+post_status() {  # <pending|success|failure|error> <description>
+  [ -n "$status_token" ] || return 0
+  local body code
+  body=$(STATE="$1" DESC="$2" CTX="$STATUS_CONTEXT" python3 -c \
+    'import json,os; print(json.dumps({"state":os.environ["STATE"],"description":os.environ["DESC"][:140],"context":os.environ["CTX"]}))')
+  code=$(printf 'Authorization: token %s\n' "$status_token" |
+    curl -s -o /dev/null -w '%{http_code}' -X POST -H @- -H 'Content-Type: application/json' \
+      --data "$body" "$STATUS_API/$commit") || code="curl failed"
+  case "$code" in
+    2??) ;;
+    *) echo "run-macos-ci: posting the $1 commit status failed ($code); is $short pushed to origin?" >&2 ;;
+  esac
+}
+
 cleanup() {
   status=$?
+  # 0 and 1 posted their verdict below; anything else (setup failed, or
+  # interrupted) mustn't leave the commit pending.
+  case "$status" in
+    0|1) ;;
+    *) post_status error "run aborted (exit $status) before the tests finished" ;;
+  esac
   if tart list --quiet 2>/dev/null | grep -qx "$vm"; then
     tart stop "$vm" >/dev/null 2>&1 || true
     tart delete "$vm" >/dev/null 2>&1 || true
@@ -87,6 +123,7 @@ cleanup() {
   exit "$status"
 }
 trap cleanup EXIT INT TERM
+post_status pending "building and testing in a Tart VM on lime's Mac"
 
 # 1. The image: pulled once, then served from TART_HOME's OCI cache.
 if ! tart list --source oci --quiet | grep -qx "$IMAGE"; then
@@ -161,7 +198,9 @@ set -e
 
 if [ "$result" -eq 0 ]; then
   echo "== PASS: $REF ($short)" | tee -a "$log"
+  post_status success "build and tests passed on $(grep -m1 '^macOS ' "$log" || echo macOS); log ${log##*/}"
   exit 0
 fi
 echo "== FAIL ($result): $REF ($short). Log: $log" | tee -a "$log"
+post_status failure "build or tests failed; log ${log##*/} on lime's Mac"
 exit 1
