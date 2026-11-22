@@ -12,6 +12,12 @@ $keep = "$here\last-run"
 
 Remove-Item -Recurse -Force $keep -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $keep | Out-Null
+if ((Test-Path $saved) -and (Test-Path "$data\links.json")) {
+  # WSL cards keep Claude running in a tmux session named after the card,
+  # which outlives the app; end the test cards' sessions.
+  $ids = node -e "let s=require('fs').readFileSync(process.argv[1],'utf8'); if(s.charCodeAt(0)===0xfeff)s=s.slice(1); const l=JSON.parse(s); console.log((l.links||l).map(x=>x.id).join(' '))" "$data\links.json"
+  if ($ids) { & "$here\wsl-state.ps1" kill @($ids -split ' ') }
+}
 if (Test-Path $saved) {
   if (Test-Path $data) { Move-Item $data "$keep\app-data" }
   Move-Item $saved $data

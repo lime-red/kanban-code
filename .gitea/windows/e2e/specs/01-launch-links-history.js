@@ -20,7 +20,7 @@ module.exports = {
       project,
       launch: false,
     });
-    await t.invoke('set_card_runtime', { cardId: link.id, runtime: 'windows' });
+    await t.invoke('set_card_runtime', { cardId: link.id, runtime: t.runtime });
     // Still there a few seconds on, i.e. not overwritten by a refresh (#33).
     await t.page.waitForTimeout(5000);
     const names = (await t.cards()).map((c) => c.link.name);
