@@ -132,6 +132,13 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         let _ = try await runTmux(["send-keys", "-t", sessionName, "Escape"])
     }
 
+    public func sendKey(to sessionName: String, key: String) async throws {
+        let result = try await runTmux(["send-keys", "-t", sessionName, key])
+        if !result.succeeded {
+            throw TmuxError.keyNotSent(sessionName: sessionName, key: key)
+        }
+    }
+
     /// Exit tmux copy/scroll mode if active, so send-keys reaches the application.
     public func exitScrollMode(sessionName: String) async throws {
         // Send 'q' to exit copy mode. If not in copy mode, 'q' is harmless
@@ -343,12 +350,14 @@ public enum TmuxError: Error, LocalizedError {
     case createFailed(name: String, message: String)
     case killFailed(name: String, message: String)
     case promptNotSubmitted(sessionName: String)
+    case keyNotSent(sessionName: String, key: String)
 
     public var errorDescription: String? {
         switch self {
         case .createFailed(let name, let message): "Failed to create tmux session '\(name)': \(message)"
         case .killFailed(let name, let message): "Failed to kill tmux session '\(name)': \(message)"
         case .promptNotSubmitted(let sessionName): "The prompt stayed in the composer of '\(sessionName)' after repeated Enter presses"
+        case .keyNotSent(let sessionName, let key): "Could not press \(key) in '\(sessionName)'"
         }
     }
 }

@@ -126,6 +126,7 @@ public final class MasterEngine {
         machineChoice: BoxdMachineChoice? = nil,
         keepSelection: Bool = false,
         humanPrompt: Bool = false,
+        trustFolder: Bool = false,
         completion: ((String?) -> Void)? = nil
     ) {
         if humanPrompt, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -372,7 +373,18 @@ public final class MasterEngine {
                 if !prompt.isEmpty || !images.isEmpty {
                     do {
                         let imageSender = ImageSender(tmux: tmux)
-                        try await imageSender.waitForReady(sessionName: tmuxName, assistant: assistant)
+                        let store = self.store
+                        // The card asks the person until the trust screen goes.
+                        defer { store.dispatch(.claudeTrustPrompt(cardId: cardId, showing: false)) }
+                        try await imageSender.waitForReady(
+                            sessionName: tmuxName,
+                            assistant: assistant,
+                            trustFolder: trustFolder,
+                            onTrustPrompt: { showing in
+                                await MainActor.run {
+                                    store.dispatch(.claudeTrustPrompt(cardId: cardId, showing: showing))
+                                }
+                            })
                         assistantReady = true
 
                         if let preparation = boxdPreparation, !images.isEmpty {

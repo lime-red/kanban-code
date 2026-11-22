@@ -205,6 +205,10 @@ public final class AppState: @unchecked Sendable {
     /// Transient — not persisted. Used to show a spinner on the card.
     public var busyCards: Set<String> = [] { didSet { cardInputsVersion &+= 1 } }
 
+    /// Cards whose Claude is showing its folder trust screen and waits on
+    /// the person to answer. Transient: launch sets it while it waits.
+    public var claudeTrustPrompts: Set<String> = []
+
     /// Global remote execution settings (from Settings.remote).
     public var globalRemoteSettings: RemoteSettings?
 
@@ -910,6 +914,10 @@ public enum Action: Sendable {
     case dismissFailedPrompt(cardId: String, promptId: String)
     /// Same banner as `setError`, but says what kind of news it is.
     case setNotice(String?, kind: NoticeKind)
+    /// Claude's folder trust screen came up in the card's session, or went away.
+    case claudeTrustPrompt(cardId: String, showing: Bool)
+    /// The person answered the trust screen from the card.
+    case answerClaudeTrustPrompt(cardId: String, trust: Bool)
     case setRateLimitedRepos(Set<String>)
     case setSelectedProject(String?)
     case setLoading(Bool)
@@ -1039,6 +1047,8 @@ public enum Effect: Sendable {
     /// `human` marks a prompt the human wrote himself, for a rush session
     /// that records it.
     case sendPromptToTmux(sessionName: String, promptBody: String, assistant: CodingAssistant, human: Bool = false)
+    /// Answers Claude's folder trust screen in the session.
+    case answerClaudeTrustPrompt(cardId: String, sessionName: String, trust: Bool)
     case sendPromptWithImagesToTmux(sessionName: String, promptBody: String, imagePaths: [String], assistant: CodingAssistant, human: Bool = false)
     /// Writes a prompt the human wrote himself to the card's record of them.
     case recordHumanMessage(cardId: String, text: String, at: Date, sessionId: String?)
@@ -3253,6 +3263,21 @@ public enum Reducer {
             failed.removeAll { $0.id == promptId }
             state.failedPrompts[cardId] = failed.isEmpty ? nil : failed
             return []
+
+        case .claudeTrustPrompt(let cardId, let showing):
+            if showing {
+                state.claudeTrustPrompts.insert(cardId)
+            } else {
+                state.claudeTrustPrompts.remove(cardId)
+            }
+            return []
+
+        case .answerClaudeTrustPrompt(let cardId, let trust):
+            guard state.claudeTrustPrompts.contains(cardId),
+                  let sessionName = state.links[cardId]?.tmuxLink?.sessionName else { return [] }
+            // Gone at once; it comes back if the answer does not take.
+            state.claudeTrustPrompts.remove(cardId)
+            return [.answerClaudeTrustPrompt(cardId: cardId, sessionName: sessionName, trust: trust)]
 
         case .setNotice(let message, let kind):
             state.notice = message.map { Notice($0, kind: kind) }

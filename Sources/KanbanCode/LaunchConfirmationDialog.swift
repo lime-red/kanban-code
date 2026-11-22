@@ -26,7 +26,7 @@ struct LaunchConfirmationDialog: View {
     var onMachineChoice: (BoxdMachineChoice) -> Void = { _ in }
     /// Asks the caller to remove the machine of this card. The caller confirms.
     var onRemoveMachine: (() -> Void)?
-    var onLaunch: (String, Bool, String?, Bool, Bool, String?, [ImageAttachment], String?) -> Void = { _, _, _, _, _, _, _, _ in } // (editedPrompt, createWorktree, worktreeBranch, runRemotely, skipPermissions, commandOverride, images, apiServiceId)
+    var onLaunch: (String, Bool, String?, Bool, Bool, String?, [ImageAttachment], String?, Bool) -> Void = { _, _, _, _, _, _, _, _, _ in } // (editedPrompt, createWorktree, worktreeBranch, runRemotely, skipPermissions, commandOverride, images, apiServiceId, trustFolder)
 
     private let settingsStore = SettingsStore()
     @State private var settings = Settings()
@@ -41,6 +41,9 @@ struct LaunchConfirmationDialog: View {
     @State private var runRemotely: Bool
     @State private var machineChoice: BoxdMachineChoice
     @AppStorage("dangerouslySkipPermissions") private var dangerouslySkipPermissions = true
+    /// Claude Code has not been trusted in this folder, so it will ask first.
+    @State private var folderIsUntrusted = false
+    @State private var trustFolder = false
 
     init(
         cardId: String,
@@ -59,7 +62,7 @@ struct LaunchConfirmationDialog: View {
         initialServiceId: String? = nil,
         modelOverride: String? = nil,
         isPresented: Binding<Bool>,
-        onLaunch: @escaping (String, Bool, String?, Bool, Bool, String?, [ImageAttachment], String?) -> Void = { _, _, _, _, _, _, _, _ in },
+        onLaunch: @escaping (String, Bool, String?, Bool, Bool, String?, [ImageAttachment], String?, Bool) -> Void = { _, _, _, _, _, _, _, _, _ in },
         onMachineChoice: @escaping (BoxdMachineChoice) -> Void = { _ in },
         onRemoveMachine: (() -> Void)? = nil
     ) {
@@ -195,6 +198,16 @@ struct LaunchConfirmationDialog: View {
 
                         Toggle("Dangerously skip permissions", isOn: $dangerouslySkipPermissions)
                             .font(.app(.callout))
+
+                        if asksForTrust {
+                            Toggle("Trust this folder", isOn: $trustFolder)
+                                .font(.app(.callout))
+                            Text("Claude Code hasn't run here before and will ask whether you trust the files in this folder. Tick to answer Yes, or answer in the terminal.")
+                                .font(.app(.caption2))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.leading, 20)
+                        }
                     }
 
                     // Editable command
@@ -249,7 +262,13 @@ struct LaunchConfirmationDialog: View {
         .onAppear {
             command = commandPreview
         }
-        .task { await reloadServices() }
+        .task {
+            if assistant == .claude && !isResume {
+                let path = projectPath
+                folderIsUntrusted = await Task.detached { ClaudeFolderTrust.isTrusted(path) == false }.value
+            }
+            await reloadServices()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeSettingsChanged)) { _ in
             Task { await reloadServices() }
         }
@@ -378,7 +397,7 @@ struct LaunchConfirmationDialog: View {
                 RemoteLaunchOptions.rememberMachineChoice(machineChoice, projectPath: projectPath)
             }
         }
-        onLaunch(prompt, effectiveCreateWorktree, branch.isEmpty ? nil : branch, effectiveRunRemotely, dangerouslySkipPermissions, override, images, selectedServiceId)
+        onLaunch(prompt, effectiveCreateWorktree, branch.isEmpty ? nil : branch, effectiveRunRemotely, dangerouslySkipPermissions, override, images, selectedServiceId, asksForTrust && trustFolder)
         isPresented = false
     }
 
@@ -398,6 +417,12 @@ struct LaunchConfirmationDialog: View {
 
     private var effectiveRunRemotely: Bool {
         runRemotely && canRunRemotely
+    }
+
+    /// Claude will show its trust screen. Only known on this Mac: a machine
+    /// keeps its own trusted folders.
+    private var asksForTrust: Bool {
+        folderIsUntrusted && !effectiveRunRemotely
     }
 
     /// True when the session runs on a machine: an ssh machine or boxd.
