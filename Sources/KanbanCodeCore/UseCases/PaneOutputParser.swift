@@ -20,7 +20,10 @@ public enum PaneOutputParser {
     /// Check if the assistant's input prompt is visible (ready for input).
     public static func isReady(_ paneOutput: String, assistant: CodingAssistant) -> Bool {
         switch assistant {
-        case .claude, .gemini:
+        case .claude:
+            // The trust screen's menu marks its selected line with `❯` too.
+            return paneOutput.contains(assistant.promptCharacter) && claudeTrustPrompt(paneOutput) == nil
+        case .gemini:
             return paneOutput.contains(assistant.promptCharacter)
         case .codex:
             // Codex also prefixes historical user turns with `› text`; only a
@@ -63,6 +66,43 @@ public enum PaneOutputParser {
         let hasQuitOption = lines.contains { $0 == "2. No, quit" }
         let asksForEnter = lines.contains { $0.localizedCaseInsensitiveContains("press enter to continue") }
         return hasContinueOption && hasQuitOption && asksForEnter
+    }
+
+    /// Claude Code's folder trust screen, shown the first time it runs in a
+    /// folder nobody has trusted. Claude holds everything until it is
+    /// answered, and its highlighted answer is "No, exit".
+    public struct ClaudeTrustPrompt: Equatable, Sendable {
+        /// "Yes, I trust this folder" is the highlighted answer.
+        public let yesIsSelected: Bool
+    }
+
+    /// The trust screen, if the pane shows it. Current Claude Code lists
+    /// "❯ No, exit" then "Yes, I trust this folder"; older versions asked
+    /// "Do you trust the files in this folder?" with "1. Yes, proceed" and
+    /// "2. No, exit".
+    public static func claudeTrustPrompt(_ paneOutput: String) -> ClaudeTrustPrompt? {
+        let lines = paneOutput
+            .components(separatedBy: .newlines)
+            .suffix(40)
+            .map { stripAnsi($0).trimmingCharacters(in: .whitespaces) }
+        let asksAboutFiles = lines.contains { $0.localizedCaseInsensitiveContains("Do you trust the files in this folder") }
+        // The answer without the highlight and any "1." numbering.
+        func answer(_ line: String) -> String {
+            var s = Substring(line)
+            if s.hasPrefix("❯") || s.hasPrefix(">") { s = s.dropFirst() }
+            s = s.drop(while: { $0 == " " })
+            if let dot = s.firstIndex(of: "."), s[..<dot].allSatisfy(\.isNumber), !s[..<dot].isEmpty {
+                s = s[s.index(after: dot)...].drop(while: { $0 == " " })
+            }
+            return String(s)
+        }
+        guard lines.contains(where: { answer($0) == "No, exit" }),
+              let yes = lines.first(where: {
+                  let a = answer($0)
+                  return a == "Yes, I trust this folder" || (asksAboutFiles && a == "Yes, proceed")
+              })
+        else { return nil }
+        return ClaudeTrustPrompt(yesIsSelected: yes.hasPrefix("❯") || yes.hasPrefix(">"))
     }
 
     /// Backward-compatible: check if Claude Code's input prompt is visible.

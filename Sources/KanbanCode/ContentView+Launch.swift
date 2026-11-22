@@ -56,7 +56,7 @@ extension ContentView {
         }
     }
 
-    func executeLaunch(cardId: String, prompt: String, projectPath: String, worktreeName: String?, runRemotely: Bool = true, skipPermissions: Bool = true, commandOverride: String? = nil, images: [ImageAttachment] = [], assistant: CodingAssistant = .claude, serviceIdOverride: String? = nil, modelOverride: String? = nil, machineChoice: BoxdMachineChoice? = nil, focusCard: Bool = true, completion: ((String?) -> Void)? = nil) {
+    func executeLaunch(cardId: String, prompt: String, projectPath: String, worktreeName: String?, runRemotely: Bool = true, skipPermissions: Bool = true, commandOverride: String? = nil, images: [ImageAttachment] = [], assistant: CodingAssistant = .claude, serviceIdOverride: String? = nil, modelOverride: String? = nil, machineChoice: BoxdMachineChoice? = nil, focusCard: Bool = true, trustFolder: Bool = false, completion: ((String?) -> Void)? = nil) {
         engine.launch(
             cardId: cardId,
             prompt: prompt,
@@ -72,6 +72,7 @@ extension ContentView {
             machineChoice: machineChoice,
             keepSelection: !focusCard,
             humanPrompt: true,
+            trustFolder: trustFolder,
             completion: completion
         )
         if focusCard { shouldFocusTerminal = true }
